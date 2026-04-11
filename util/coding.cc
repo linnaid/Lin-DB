@@ -64,8 +64,13 @@ namespace lindb {
         dst->append(buf, ptr - buf);
     }
 
-    int VarintLength(int64_t value) {
-        
+    int VarintLength(uint64_t value) {
+        int len = 1;
+        while(value >= 128) {
+            value >>= 7;
+            len++;
+        }
+        return len;
     }
 
 }
