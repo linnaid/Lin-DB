@@ -1,5 +1,8 @@
 #pragma once
 
+#include <atomic>
+#include <cassert>
+
 #include "util/arena.h"
 #include "util/random.h"
 
@@ -32,7 +35,7 @@ public:
 
     // 迭代器，负责顺序遍历 SkipList
     class Iterator {
-    Public:
+    public:
         // 绑定到某个 SkipList，初始时无效
         explicit Iterator(const SkipList* list);
 
@@ -64,12 +67,12 @@ public:
         const SkipList* list_;
 
         // 当前所指向的节点；nullptr 表示无效
-        Node* node_:
+        Node* node_;
     };
 
 private:
     // 跳表允许的最大高度
-    enum ( kMaxHeight = 12 );
+    enum { kMaxHeight = 12 };
 
     // 返回当前跳表实际使用的最高层数
     int GetMaxHeight() const {
@@ -128,13 +131,14 @@ struct SkipList<Key, Comparator>::Node{
     // 带  acquire 语义读取第 n 层 next 指针
     Node* Next(int n) {
         assert(n >= 0);
+        // load 是原子读指针；store 是原子写指针
         return next_[n].load(std::memory_order_acquire);
     }
 
     // 带 release 语义发布第 n 层 next 指针；
     void SetNext(int n, Node* x) {
         assert(n >= 0);
-        next_[n].store(s, std::memory_order_release);
+        next_[n].store(x, std::memory_order_release);
     }
 
     // relaxed 读取 next 指针
@@ -155,3 +159,7 @@ private:
 };
 
 }
+
+#define LINDB_SKIPLIST_IMPLEMENTATION_INCLUDE_FROM_HEADER
+#include "skiplist.cc"
+#undef LINDB_SKIPLIST_IMPLEMENTATION_INCLUDE_FROM_HEADER
