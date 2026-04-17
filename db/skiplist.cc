@@ -1,7 +1,7 @@
 #pragma once
 
 #ifndef LINDB_SKIPLIST_IMPLEMENTATION_INCLUDE_FROM_HEADER
-#include "skiplist.h"
+#include "Lin-DB/db/skiplist.h"
 #endif
 
 namespace lindb {
