@@ -5,6 +5,8 @@
 #include <cassert>
 #include <limits>
 
+#include <lindb/iterator.h>
+
 #include "Lin-DB/util/coding.h"
 
 namespace lindb {
@@ -47,6 +49,58 @@ Slice GetLengthPrefixedSlice(const char* data) {
 }
 
 }
+
+class MemTable::MemTableIterator : public Iterator {
+public:
+    explicit MemTableIterator(const Table* table)
+        : iter_(table) {}
+
+    bool Valid() const override { return iter_.Valid(); }
+
+    void SeekToFirst() override { iter_.SeekToFirst(); }
+
+    void SeekToLast() override { iter_.SeekToLast(); }
+
+    void Seek(const Slice& target) override { 
+        assert(target.size() <= std::numeric_limits<uint32_t>::max());
+
+        std::string memtable_key;
+        PutVarint32(&memtable_key, static_cast<uint32_t>(target.size()));
+        memtable_key.append(target.data(), target.size());
+
+        iter_.Seek(memtable_key.data());
+    }
+
+    void Next() override {
+        assert(Valid());
+        iter_.Next();
+    }
+
+    void Prev() override {
+        assert(Valid());
+        iter_.Prev();
+    }
+
+    Slice key() const override {
+        assert(Valid());
+        return GetLengthPrefixedSlice(iter_.key());
+    }
+
+    Slice value() const override {
+        assert(Valid());
+
+        const char* entry = iter_.key();
+        Slice entry_key = GetLengthPrefixedSlice(entry);
+        const char* value_ptr = entry_key.data() + entry_key.size();
+
+        return GetLengthPrefixedSlice(value_ptr);
+    }
+
+    Status status() const override { return Status::OK(); }
+
+private:
+    Table::Iterator iter_;
+};
 
 MemTable::KeyComparator::KeyComparator(const InternalKeyComparator& c)
     : comparator(c) {}
@@ -126,6 +180,10 @@ bool MemTable::Get(const LookupKey& key, std::string* value) {
 
     assert(false);
     return false;
+}
+
+Iterator* MemTable::NewIterator() const {
+    return new MemTableIterator(&table_);
 }
 
 size_t MemTable::ApproximateMemoryUsage() const {

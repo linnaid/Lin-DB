@@ -1,12 +1,16 @@
 // 内存写缓冲区，负责暂存所有尚未持久化到 SSTable 的数据
 #pragma once
 
+#include <string>
 #include "Lin-DB/db/dbformat.h"
 #include "Lin-DB/db/skiplist.h"
 #include "Lin-DB/util/arena.h"
 
 namespace lindb {
 
+class Iterator;
+
+// 封装内存中的有序多版本表
 class MemTable {
 public:
     explicit MemTable(const InternalKeyComparator& comparator);
@@ -15,6 +19,9 @@ public:
 
     void Add(SequenceNumber seq, ValueType type, const Slice& key, const Slice& value);
     bool Get(const LookupKey& key, std::string* value);
+
+    // 返回一个遍历 internal key -> value 的统一迭代器
+    Iterator* NewIterator() const;
 
     // 返回当前 Arena 近似占用的内存
     size_t ApproximateMemoryUsage() const;
@@ -32,6 +39,9 @@ private:
 
     // 给模板类型起别名，使得代码看起来更简洁
     using Table = SkipList<const char*, KeyComparator>;
+
+    // 前向声明 Memtable 专用迭代器实现
+    class MemTableIterator;
 
     // 保存 MemTable 中所有 entry 和 skiplist node 的内存
     Arena arena_;
