@@ -12,6 +12,8 @@
 
 namespace lindb {
 
+class WriteBatch;
+
 class DBImpl final : public DB {
 public:
     DBImpl(const Options& options, std::string dbname);
@@ -22,6 +24,8 @@ public:
     Status Get(const ReadOptions& options, const Slice& key, std::string* value) override;
 
 private:
+    // 执行统一写入路径：分配 sequence 并回放 batch
+    Status Write(const WriteOptions& options, WriteBatch* batch);
     SequenceNumber NewSequence();
 
     Options options_;

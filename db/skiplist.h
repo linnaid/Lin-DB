@@ -155,7 +155,7 @@ struct SkipList<Key, Comparator>::Node{
     }
 
 private:
-    // 第 0 层是最底层链表
+    // 第 0 层是最底层链表(柔性数组)
     std::atomic<Node*> next_[1];
 };
 

@@ -14,6 +14,7 @@ add_library(lindb_core
     util/slice.cc
     util/status.cc
     db/db_impl.cc
+    db/write_batch.cc
     db/dbformat.cc
     db/memtable.cc
     db/iterator.cc

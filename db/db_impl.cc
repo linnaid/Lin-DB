@@ -3,6 +3,9 @@
 #include <cassert>
 #include <utility>
 
+#include <lindb/write_batch.h>
+#include "Lin-DB/db/write_batch_internal.h"
+
 
 namespace lindb {
 
@@ -14,19 +17,44 @@ DBImpl::DBImpl(const Options& options, std::string dbname)
       last_sequence_(0) {}
 
 Status DBImpl::Put(const WriteOptions& options, const Slice& key, const Slice& value) {
-    (void)options;
+    // (void)options;
+    WriteBatch batch;
+    batch.Put(key, value);
+    return Write(options, &batch);
 
-    const SequenceNumber sequence = NewSequence();
-    mem_.Add(sequence, kTypeValue, key, value);
-    return Status::OK();
+    // const SequenceNumber sequence = NewSequence();
+    // mem_.Add(sequence, kTypeValue, key, value);
+    // return Status::OK();
 }
 
 Status DBImpl::Delete(const WriteOptions& options, const Slice& key) {
+    WriteBatch batch;
+    batch.Put(key, Slice());
+    return Write(options, &batch);
+}
+
+Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
     (void)options;
 
-    const SequenceNumber sequence = NewSequence();
-    mem_.Add(sequence, kTypeDeletion, key, Slice());
-    return Status::OK();
+    if (updates == nullptr) {
+        return Status::InvalidArgument("DBImpl::Write updates is null");
+    }
+
+    const int count = WriteBatchInternal::Count(updates);
+    if (count == 0) {
+        return Status::OK();
+    }
+
+    assert(last_sequence_ <= kMaxSequenceNumber - static_cast<SequenceNumber>(count));
+    const SequenceNumber frist_sequence = last_sequence_ + 1;
+    WriteBatchInternal::SetSequence(updates, frist_sequence);
+
+    Status s = WriteBatchInternal::InsertInto(updates, &mem_);
+    if(s.ok()) {
+        last_sequence_ += static_cast<SequenceNumber>(count);
+    }
+
+    return s;
 }
 
 Status DBImpl::Get(const ReadOptions& options, const Slice& key, std::string* value) {
