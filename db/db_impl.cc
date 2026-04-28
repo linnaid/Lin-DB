@@ -29,7 +29,7 @@ Status DBImpl::Put(const WriteOptions& options, const Slice& key, const Slice& v
 
 Status DBImpl::Delete(const WriteOptions& options, const Slice& key) {
     WriteBatch batch;
-    batch.Put(key, Slice());
+    batch.Delete(key);
     return Write(options, &batch);
 }
 
