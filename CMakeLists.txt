@@ -13,6 +13,9 @@ add_library(lindb_core
     util/random.cc
     util/slice.cc
     util/status.cc
+    util/crc32c.cc
+    util/hash.cc
+    util/logging.cc
     db/db_impl.cc
     db/write_batch.cc
     db/dbformat.cc
