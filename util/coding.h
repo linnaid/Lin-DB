@@ -14,17 +14,17 @@ void EncodeFixed32(char* dst, uint32_t value);
 // 向尾部追加固定的32位整数
 void PutFixed32(std::string* dst, uint32_t value);
 
-// 从 8 字节小端序缓冲区读出 uint32_t
+// 从 4 字节小端序缓冲区读出 uint32_t
 uint32_t DecodeFixed32(const char* ptr);
 
     
 // 把 uint64_t 按小端序写入固定8字节缓冲区
 void EncodeFixed64(char* dst, uint64_t value);
 
-// 向尾部追加固定的64位整数(作用：写入 internal key 的 tag)
+// 向尾部追加固定的64位整数(可以用于写入 internal key 的 tag)
 void PutFixed64(std::string* dst, uint64_t value);
 
-// 读出(作用：解析tag)
+// 读出(可以用于解析tag)
 uint64_t DecodeFixed64(const char* ptr);
 
 

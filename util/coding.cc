@@ -1,4 +1,4 @@
-#include "util/coding.h"
+#include "Lin-DB/util/coding.h"
 
 #include <cstddef>
 #include <limits>
@@ -139,7 +139,7 @@ const char* GetVarint64Ptr(const char* p, const char* limit, uint64_t* value) {
     return nullptr;
 }
 
-bool GeiVarint64(Slice* input, uint64_t* value) {
+bool GetVarint64(Slice* input, uint64_t* value) {
     const char* start = input->data();
     const char* limit = start + input->size();
     const char* parsed = GetVarint64Ptr(start, limit, value);

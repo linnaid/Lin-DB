@@ -9,6 +9,9 @@
 namespace lindb {
 
 uint32_t Hash(const char* data, size_t n, uint32_t seed) {
+    if (n == 0) {
+        return seed;
+    }
     // hash 混合乘法常量
     constexpr uint32_t m = 0xc6a4a793U;
     // hash 混合右移位数
@@ -41,6 +44,8 @@ uint32_t Hash(const char* data, size_t n, uint32_t seed) {
     default:
         break;
     }
+
+    return  h;
 }
 
 

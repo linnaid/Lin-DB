@@ -1,0 +1,21 @@
+function(add_lindb_test name)
+    add_executable(${name} ${name}.cc)
+    target_link_libraries(${name} PRIVATE lindb_core)
+    add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
+add_lindb_test(slice_test)
+add_lindb_test(comparator_test)
+add_lindb_test(coding_test)
+add_lindb_test(crc32c_test)
+add_lindb_test(hash_test)
+add_lindb_test(logging_test)
+add_lindb_test(arena_test)
+add_lindb_test(random_test)
+add_lindb_test(status_test)
+add_lindb_test(iterator_test)
+add_lindb_test(dbformat_test)
+add_lindb_test(skiplist_test)
+add_lindb_test(memtable_test)
+add_lindb_test(db_test)  # 注册 DB 最小内核测试，覆盖 Open/Put/Delete/Get 的内存路径。
+add_lindb_test(write_batch_test)  # 注册 WriteBatch 测试，覆盖编码、回放、sequence、MemTable 插入和坏数据检测。
