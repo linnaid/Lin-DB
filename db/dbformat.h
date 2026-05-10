@@ -99,6 +99,10 @@ public:
     // 返回比较器的名字
     const char* Name() const override;
 
+    void FindShortestSeparator(std::string* start, const Slice& limit) const override;
+
+    void FindShortSuccessor(std::string* key) const override;
+    
     // 返回第层 user key comparator
     const Comparator* user_comparator() const;
 

@@ -107,6 +107,34 @@ namespace lindb {
         return "lindb.InternalKeyComparator";
     }
 
+    void InternalKeyComparator::FindShortestSeparator(std::string* start, const Slice& limit) const {
+        const Slice user_start = ExtractUserKey(Slice(*start));
+        const Slice user_limit = ExtractUserKey(limit);
+        std::string tmp(user_start.data(), user_start.size());
+
+        user_comparator_->FindShortestSeparator(&tmp, user_limit);
+
+        if (tmp.size() < user_start.size() && user_comparator_->Compare(user_start, Slice(tmp)) < 0) {
+            PutFixed64(&tmp, PackSequenceAndType(kMaxSequenceNumber, kValueTypeForSeek));
+            assert(Compare(*start, tmp) < 0);
+            assert(Compare(tmp, limit) < 0);
+            start->swap(tmp);
+        }
+    }
+
+    void InternalKeyComparator::FindShortSuccessor(std::string* key) const {
+        const Slice user_key = ExtractUserKey(Slice(*key));
+        std::string tmp(user_key.data(), user_key.size());
+
+        user_comparator_->FindShortSuccessor(&tmp);
+
+        if (tmp.size() < user_key.size() && user_comparator_->Compare(user_key, Slice(tmp)) < 0) {
+            PutFixed64(&tmp, PackSequenceAndType(kMaxSequenceNumber, kValueTypeForSeek));
+            assert(Compare(*key, tmp) < 0);
+            key->swap(tmp);
+        }
+    }
+
     const Comparator* InternalKeyComparator::user_comparator() const {
         return user_comparator_;
     }
