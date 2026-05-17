@@ -16,11 +16,13 @@ add_library(lindb_core
     util/crc32c.cc
     util/hash.cc
     util/logging.cc
+    util/env.cc
     db/db_impl.cc
     db/write_batch.cc
     db/dbformat.cc
     db/memtable.cc
     db/iterator.cc
+    db/filename.cc
 )
 
 target_include_directories(lindb_core
