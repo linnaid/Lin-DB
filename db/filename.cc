@@ -1,4 +1,4 @@
-#include "lindb/filename.h"
+#include <lindb/filename.h>
 
 #include <cassert>
 #include <cstdio>
@@ -47,6 +47,10 @@ std::string DescriptorFileName(const std::string& dbname, uint64_t number) {
 
 std::string CurrentFileName(const std::string& dbname) {
     return dbname + "/CURRENT";
+}
+
+std::string LockFileName(const std::string& dbname) {
+    return dbname + "/LOCK";
 }
 
 std::string TempFileName(const std::string& dbname, uint64_t number) {

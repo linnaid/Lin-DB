@@ -1,5 +1,6 @@
 // 定义数据库全局比较规则
 #pragma once
+#include <string>
 
 namespace lindb {
 
