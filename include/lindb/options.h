@@ -21,7 +21,7 @@ enum CompressionType {
 struct Options {
     const Comparator* comparator = BytewiseComparator();
     // 后续 Open/Recover 决定是否自动建库
-    bool creat_if_missing = false;
+    bool create_if_missing = false;
     // 后续 Open 决定是否拒绝打开已有库
     bool error_if_exists = false;
     // 后续读校验/恢复路径用
