@@ -49,4 +49,12 @@ private:
     size_t size_;
 };
 
+inline bool operator==(const Slice& a, const Slice& b) {
+    return a.compare(b) == 0;
+}
+
+inline bool operator!=(const Slice& a, const Slice& b) {
+    return !(a == b);
+}
+
 }
