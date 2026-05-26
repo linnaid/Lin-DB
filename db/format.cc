@@ -1,5 +1,7 @@
 #include "Lin-DB/db/format.h"
 
+#include <cassert>
+
 #include "lindb/env.h"
 #include "lindb/options.h"
 #include "Lin-DB/util/coding.h"
@@ -29,8 +31,8 @@ void Footer::EncodeTo(std::string* dst) const {
     // 原本kMaxEncodedLength 
     dst->resize(original_size + 2 * BlockHandle::kMaxEncodedLength);
     // 写 magic
-    PutFixed32(dst, static_cast<uint32_t>(kTableMegicNumber));
-    PutFixed32(dst, static_cast<uint32_t>(kTableMegicNumber >> 32));
+    PutFixed32(dst, static_cast<uint32_t>(kTableMagicNumber));
+    PutFixed32(dst, static_cast<uint32_t>(kTableMagicNumber >> 32));
 }
 
 Status Footer::DecodeFrom(Slice* input) {
@@ -43,8 +45,8 @@ Status Footer::DecodeFrom(Slice* input) {
     const uint32_t magic_hi = DecodeFixed32(magic_ptr + 4);
     const uint64_t magic = (static_cast<uint64_t>(magic_hi) << 32) | static_cast<uint64_t>(magic_lo);
 
-    if (magic != kTableMegicNumber) {
-        return Status::Corruption("not an sstable {bad magic number)");
+    if (magic != kTableMagicNumber) {
+        return Status::Corruption("not an sstable (bad magic number)");
     }
 
     Status s = metaindex_handle_.DecodeFrom(input);
@@ -94,9 +96,17 @@ Status ReadBlock(RandomAccessFile* file, const ReadOptions& options,
             return Status::NotSupported("compressed block");
         }
 
-        result->data = Slice(buf, n);
-        result->heap_allocated = true;
-        result->cachable = true;
+        if (data != buf) {
+            delete[] buf;
+            result->data = Slice(data, n);
+            result->heap_allocated = false;
+            result->cachable = false;
+        } else {
+            result->data = Slice(buf, n);
+            result->heap_allocated = true;
+            result->cachable = true;
+        }
+        
         return Status::OK();
     }
 

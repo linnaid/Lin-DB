@@ -54,7 +54,7 @@ private:
     BlockHandle index_handle_;
 };
 
-inline constexpr uint64_t kTableMegicNumber = 0xdb4775248b80fb57ull;
+inline constexpr uint64_t kTableMagicNumber = 0xdb4775248b80fb57ull;
 // 1 byte type + 4 byte masked crc
 inline constexpr size_t kBlockTrailerSize = 5;
 

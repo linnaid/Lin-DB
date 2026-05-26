@@ -34,6 +34,24 @@ struct TableBuilder::Rep {
     BlockHandle pending_handle;
 };
 
+TableBuilder::TableBuilder(const Options& options, WritableFile* file) 
+    : rep_(new Rep(options, file)) {}
+
+TableBuilder::~TableBuilder() {
+    assert(rep_->closed);
+    delete rep_;
+}
+
+Status TableBuilder::ChangeOptions(const Options& options) {
+    if (options.comparator != rep_->options.comparator) {
+        return Status::InvalidArgument("changing comparator while building table");
+    }
+    rep_->options = options;
+    rep_->index_block_options = options;
+    rep_->index_block_options.block_restart_interval = 1;
+    return Status::OK();
+}
+
 void TableBuilder::Add(const Slice& key, const Slice& value) {
     Rep* r = rep_;
     assert(!r->closed);
@@ -72,6 +90,10 @@ void TableBuilder::Flush() {
         r->pending_index_entry = true;
         r->status = r->file->Flush();
     }
+}
+
+Status TableBuilder::status() const {
+    return rep_->status;
 }
 
 void TableBuilder::WriteBlock(BlockBuilder* block, BlockHandle* handle) {
@@ -130,6 +152,7 @@ Status TableBuilder::Finish() {
         footer.set_metaindex_handle(metaindex_handle);
         footer.set_index_handle(index_handle);
         std::string footer_encoding;
+        footer.EncodeTo(&footer_encoding);
         r->status = r->file->Append(Slice(footer_encoding));
         if (r->status.ok()) {
             r->offset += footer_encoding.size();
@@ -137,6 +160,20 @@ Status TableBuilder::Finish() {
     }
 
     return r->status;
+}
+
+void TableBuilder::Abandon() {
+    Rep* r = rep_;
+    assert(!r->closed);
+    r->closed = true;
+}
+
+uint64_t TableBuilder::NumEntries() const {
+    return rep_->num_entries;
+}
+
+uint64_t TableBuilder::FileSize() const {
+    return rep_->offset;
 }
 
 }
