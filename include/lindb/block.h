@@ -12,7 +12,9 @@ class Comparator;
 
 struct BlockContents {
     Slice data;
+    // 是否可缓存到 block cache 中
     bool cachable = false;
+    // 是否是heap分配的内存, Block 负责释放
     bool heap_allocated = false;
 };
 

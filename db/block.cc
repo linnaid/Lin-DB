@@ -46,8 +46,10 @@ const char* DecodeEntry(const char* p, const char* limit, uint32_t* shared, uint
 class BlockIter : public Iterator {
 public:
     BlockIter(const Comparator* comparator, const char* data, uint32_t restarts, uint32_t num_restarts)
-        : comparator_(comparator), data_(data), restarts_(restarts), num_restarts_(num_restarts) {}
-    
+        : comparator_(comparator), data_(data), restarts_(restarts), num_restarts_(num_restarts), current_(restarts), restart_index_(num_restarts) {
+            assert(num_restarts > 0);
+        }
+
     bool Valid() const override {
         return current_ < restarts_;
     }
@@ -144,7 +146,7 @@ public:
 
     Slice value() const override {
         assert(Valid());
-        return Slice(key_);
+        return value_;
     }
 
     Status status() const override {
