@@ -23,6 +23,10 @@ add_library(lindb_core
     db/memtable.cc
     db/iterator.cc
     db/filename.cc
+    db/block_builder.cc 
+    db/block.cc
+    db/format.cc 
+    db/table_builder.cc 
 )
 
 target_include_directories(lindb_core
