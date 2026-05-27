@@ -42,7 +42,9 @@ struct Options {
 
 // 定义读操作配置。
 struct ReadOptions {
+    // 读取 block 时是否校验 checksum(crc)
     bool verify_checksums = false;
+    // 读取的数据是否放入 block cache
     bool fill_cache = true;
     const Snapshot* snapshot = nullptr;
 };

@@ -27,6 +27,7 @@ add_library(lindb_core
     db/block.cc
     db/format.cc 
     db/table_builder.cc 
+    db/table.cc 
 )
 
 target_include_directories(lindb_core
