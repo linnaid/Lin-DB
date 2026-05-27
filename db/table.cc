@@ -5,6 +5,7 @@
 #include <lindb/options.h>
 
 #include "Lin-DB/db/format.h"
+#include "Lin-DB/db/two_level_iterator.h"
 
 namespace lindb {
 
@@ -74,8 +75,9 @@ Status Table::Open(const Options& options, RandomAccessFile* file,
         return Status::OK();
     }
 
-Iterator* Table::BlockReader(const Table* table, const ReadOptions& options, 
+Iterator* Table::BlockReader(void* arg, const ReadOptions& options, 
     const Slice& index_value) {
+        const Table* table = reinterpret_cast<const Table*>(arg);
         BlockHandle handle;
         Slice input(index_value);
         Status status = handle.DecodeFrom(&input);
@@ -99,10 +101,12 @@ Iterator* Table::BlockReader(const Table* table, const ReadOptions& options,
     }
 
 Iterator* Table::NewIterator(const ReadOptions& options) const {
-    // 5.2 暂时不使用读取选项
-    (void)options;
-    // 5.3 实现完整遍历
-    return NewErrorIterator(Status::NotSupported("Table::NewIterator requires TwoLevelIterator"));
+    return NewTwoLevelIterator(
+        rep_->index_block->NewIterator(rep_->options.comparator),
+        &Table::BlockReader,
+        const_cast<Table*>(this),
+        options
+    );
 }
 
 Status Table::InternalGet(const ReadOptions& options, const Slice& key, 
@@ -112,7 +116,7 @@ Status Table::InternalGet(const ReadOptions& options, const Slice& key,
         index_iter->Seek(key);
 
         if (index_iter->Valid()) {
-            Iterator* data_iter = BlockReader(this, options, index_iter->value());
+            Iterator* data_iter = BlockReader(const_cast<Table*>(this), options, index_iter->value());
             data_iter->Seek(key);
             if (data_iter->Valid()) {
                 // CallBack 回调函数

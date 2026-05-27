@@ -35,7 +35,7 @@ private:
 
     explicit Table(Rep* rep);
 
-    static Iterator* BlockReader(const Table* table, const ReadOptions& options, 
+    static Iterator* BlockReader(void* arg, const ReadOptions& options, 
         const Slice& index_value);
     
     Rep* const rep_;

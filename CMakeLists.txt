@@ -28,6 +28,7 @@ add_library(lindb_core
     db/format.cc 
     db/table_builder.cc 
     db/table.cc 
+    db/two_level_iterator.cc
 )
 
 target_include_directories(lindb_core
