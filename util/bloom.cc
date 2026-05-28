@@ -92,10 +92,10 @@ private:
     size_t k_;
 };
 
-const FilterPolicy* NewBloomFilterPolicy(int bits_per_key) {
-    return new BloomFilterPolicy(bits_per_key);
 }
 
+const FilterPolicy* NewBloomFilterPolicy(int bits_per_key) {
+    return new BloomFilterPolicy(bits_per_key);
 }
 
 }
