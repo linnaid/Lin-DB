@@ -7,6 +7,7 @@
 #include <lindb/env.h>
 #include <lindb/options.h>
 #include <lindb/filter_policy.h>
+#include <lindb/comparator.h>
 
 #include "Lin-DB/db/format.h"
 #include "Lin-DB/db/two_level_iterator.h"
@@ -129,7 +130,7 @@ Status Table::InternalGet(const ReadOptions& options, const Slice& key,
             Slice handle_value(index_iter->value());
             BlockHandle handle;
             status = handle.DecodeFrom(&handle_value);
-            if (!status.ok()) {
+            if (status.ok()) {
                 bool may_match = true;
                 if (rep_->filter != nullptr) {
                     may_match = rep_->filter->KeyMayMatch(handle.offset(), key);
@@ -158,14 +159,6 @@ Status Table::InternalGet(const ReadOptions& options, const Slice& key,
 // 读 metaindex block，找到 filter block 的位置，并通过 ReadFilter 读入
 void Table::ReadMeta(const Footer& footer) {
     if (rep_->options.filter_policy == nullptr) {
-        return;
-    }
-
-    ReadOptions options;
-    options.verify_checksums = rep_->options.paranoid_checks;
-
-    BlockContents contents;
-    if (!ReadBlock(rep_->file, options, footer.metaindex_handle(), &contents).ok()) {
         return;
     }
 
