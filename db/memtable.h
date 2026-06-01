@@ -17,6 +17,7 @@ public:
     MemTable(const MemTable&) = delete;
     MemTable& operator=(const MemTable&) = delete;
 
+    // 在这里插入entry
     void Add(SequenceNumber seq, ValueType type, const Slice& key, const Slice& value);
     bool Get(const LookupKey& key, std::string* value);
 
@@ -54,5 +55,17 @@ private:
     Table table_;
 };
 
-
 }
+
+// MemTable 中每条记录：
+// +---------------------------+
+// | klength(varint32)         |
+// +---------------------------+
+// | userkey                   |
+// +---------------------------+
+// | tag(seq+type,8B)          |
+// +---------------------------+
+// | vlength(varint32)         |
+// +---------------------------+
+// | value                     |
+// +---------------------------+

@@ -1,16 +1,23 @@
 #include <lindb/table.h>
 
+#include <cstring>
+#include <memory> 
+
 #include <lindb/block.h>
 #include <lindb/env.h>
 #include <lindb/options.h>
+#include <lindb/filter_policy.h>
 
 #include "Lin-DB/db/format.h"
 #include "Lin-DB/db/two_level_iterator.h"
+#include "Lin-DB/db/filter_block.h"
 
 namespace lindb {
 
 struct Table::Rep {
     ~Rep() {
+        delete filter;
+        delete[] filter_data;
         delete index_block;
     }
 
@@ -18,6 +25,8 @@ struct Table::Rep {
     RandomAccessFile* file = nullptr;
     BlockHandle metaindex_handle;
     Block* index_block = nullptr;
+    FilterBlockReader* filter = nullptr;
+    const char* filter_data = nullptr;
 };
 
 namespace {
@@ -72,6 +81,7 @@ Status Table::Open(const Options& options, RandomAccessFile* file,
         rep->index_block = new Block(index_contents);
 
         *table = new Table(rep);
+        (*table)->ReadMeta(footer);
         return Status::OK();
     }
 
@@ -116,14 +126,25 @@ Status Table::InternalGet(const ReadOptions& options, const Slice& key,
         index_iter->Seek(key);
 
         if (index_iter->Valid()) {
-            Iterator* data_iter = BlockReader(const_cast<Table*>(this), options, index_iter->value());
-            data_iter->Seek(key);
-            if (data_iter->Valid()) {
-                // CallBack 回调函数
-                (*handle_result)(arg, data_iter->key(), data_iter->value());
+            Slice handle_value(index_iter->value());
+            BlockHandle handle;
+            status = handle.DecodeFrom(&handle_value);
+            if (!status.ok()) {
+                bool may_match = true;
+                if (rep_->filter != nullptr) {
+                    may_match = rep_->filter->KeyMayMatch(handle.offset(), key);
+                }
+                if (may_match) {
+                    Iterator* data_iter = BlockReader(const_cast<Table*>(this), options, index_iter->value());
+                    data_iter->Seek(key);
+                    if (data_iter->Valid()) {
+                        // CallBack 回调函数
+                        (*handle_result)(arg, data_iter->key(), data_iter->value());
+                    }
+                    status = data_iter->status();
+                    delete data_iter;
+                }
             }
-            status = data_iter->status();
-            delete data_iter;
         }
 
         if (status.ok()) {
@@ -133,5 +154,66 @@ Status Table::InternalGet(const ReadOptions& options, const Slice& key,
         delete index_iter;
         return status;
     }
+
+// 读 metaindex block，找到 filter block 的位置，并通过 ReadFilter 读入
+void Table::ReadMeta(const Footer& footer) {
+    if (rep_->options.filter_policy == nullptr) {
+        return;
+    }
+
+    ReadOptions options;
+    options.verify_checksums = rep_->options.paranoid_checks;
+
+    BlockContents contents;
+    if (!ReadBlock(rep_->file, options, footer.metaindex_handle(), &contents).ok()) {
+        return;
+    }
+
+    ReadOptions options;
+    options.verify_checksums = rep_->options.paranoid_checks;
+
+    BlockContents contents;
+    if (!ReadBlock(rep_->file, options, footer.metaindex_handle(), &contents).ok()) {
+        return;
+    }
+
+    Block metaindex_block(contents);
+    Iterator* iter = metaindex_block.NewIterator(BytewiseComparator());
+    std::string key = "filter.";
+    key.append(rep_->options.filter_policy->Name());
+    iter->Seek(Slice(key));
+    if (iter->Valid() && iter->key() == Slice(key)) {
+        ReadFilter(iter->value());
+    }
+    delete iter;
+}
+
+// 读取 filter block 内容
+void Table::ReadFilter(const Slice& filter_handle_value) {
+    Slice input(filter_handle_value);
+    BlockHandle filter_handle;
+    if (!filter_handle.DecodeFrom(&input).ok()) {
+        return;
+    }
+
+    ReadOptions options;
+    options.verify_checksums = rep_->options.paranoid_checks;
+
+    BlockContents contents;
+    if(!ReadBlock(rep_->file, options, filter_handle, &contents).ok()) {
+        return;
+    }
+
+    if (contents.heap_allocated) {
+        rep_->filter_data = contents.data.data();
+    } else {
+        char* copy = new char[contents.data.size()];
+        std::memcpy(copy, contents.data.data(), contents.data.size());
+        rep_->filter_data = copy;
+        contents.data = Slice(copy, contents.data.size());
+    }
+
+    rep_->filter = new FilterBlockReader(rep_->options.filter_policy, contents.data);
+}
 
 }

@@ -65,3 +65,21 @@ inline BlockHandle::BlockHandle()
       size_(~static_cast<uint64_t>(0)) {}
 
 }
+
+// BlockHandle 格式：
+// +----------------+
+// | offset(varint) |
+// +----------------+
+// | size(varint)   |
+// +----------------+
+
+// Footer 格式：
+// +----------------------+
+// | metaindex handle     |
+// +----------------------+
+// | index handle         |
+// +----------------------+
+// | padding              |
+// +----------------------+
+// | magic number(8B)     |
+// +----------------------+

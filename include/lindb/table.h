@@ -14,6 +14,7 @@ class RandomAccessFile;
 struct Options;
 struct ReadOptions;
 class Block;
+class Footer;
 
 class Table {
 public:
@@ -33,8 +34,12 @@ public:
 private:
     struct Rep;
 
+    void ReadMeta(const Footer& footer);
+    void ReadFilter(const Slice& filter_handle_value);
+
     explicit Table(Rep* rep);
 
+    // 创建block
     static Iterator* BlockReader(void* arg, const ReadOptions& options, 
         const Slice& index_value);
     
@@ -42,3 +47,18 @@ private:
 };
 
 }
+
+// SStable 文件格式：
+// +-------------------+
+// | Data Block        |
+// +-------------------+
+// | Data Block        |
+// +-------------------+
+// | Meta Block        |
+// +-------------------+
+// | MetaIndex Block   |
+// +-------------------+
+// | Index Block       |
+// +-------------------+
+// | Footer            |
+// +-------------------+

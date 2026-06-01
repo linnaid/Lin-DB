@@ -4,6 +4,9 @@
 
 #include <lindb/options.h>
 #include <lindb/block_builder.h>
+#include <lindb/filter_policy.h>
+
+#include "Lin-DB/db/filter_block.h"
 #include "Lin-DB/db/format.h"
 #include "Lin-DB/util/crc32c.h"
 #include "Lin-DB/util/coding.h"
@@ -14,7 +17,10 @@ struct TableBuilder::Rep {
     Rep(const Options& opt, WritableFile* f)
         : options(opt), index_block_options(opt), file(f), offset(0),
           data_block(&options), index_block(&index_block_options), 
-          num_entries(0), closed(false), pending_index_entry(false) {
+          num_entries(0), closed(false), pending_index_entry(false), 
+          filter_block(opt.filter_policy == nullptr 
+                            ? nullptr 
+                            : new FilterBlockBuilder(opt.filter_policy)){
             index_block_options.block_restart_interval = 1;
           }
 
@@ -32,13 +38,20 @@ struct TableBuilder::Rep {
     bool pending_index_entry;
     // 上一个 data block 的handle
     BlockHandle pending_handle;
+    FilterBlockBuilder* filter_block;
 };
 
 TableBuilder::TableBuilder(const Options& options, WritableFile* file) 
-    : rep_(new Rep(options, file)) {}
+    : rep_(new Rep(options, file)) {
+        if (rep_->filter_block != nullptr) {
+            rep_->filter_block->StartBlock(0);
+        }
+    }
 
 TableBuilder::~TableBuilder() {
     assert(rep_->closed);
+    delete rep_->filter_block;
+    rep_->filter_block = nullptr;
     delete rep_;
 }
 
@@ -46,6 +59,7 @@ Status TableBuilder::ChangeOptions(const Options& options) {
     if (options.comparator != rep_->options.comparator) {
         return Status::InvalidArgument("changing comparator while building table");
     }
+
     rep_->options = options;
     rep_->index_block_options = options;
     rep_->index_block_options.block_restart_interval = 1;
@@ -69,6 +83,10 @@ void TableBuilder::Add(const Slice& key, const Slice& value) {
         r->pending_index_entry = false;
     }
 
+    if (r->filter_block != nullptr) {
+        r->filter_block->AddKey(key);
+    }
+
     r->last_key.assign(key.data(), key.size());
     ++r->num_entries;
     r->data_block.Add(key, value);
@@ -89,6 +107,10 @@ void TableBuilder::Flush() {
     if (ok()) {
         r->pending_index_entry = true;
         r->status = r->file->Flush();
+    }
+
+    if (r->filter_block != nullptr) {
+        r->filter_block->StartBlock(r->offset);
     }
 }
 
@@ -130,9 +152,21 @@ Status TableBuilder::Finish() {
 
     BlockHandle metaindex_handle;
     BlockHandle index_handle;
+    BlockHandle filter_block_handle;
+
+    if (ok() && r->filter_block != nullptr) {
+        WriteRawBlock(r->filter_block->Finish(), kNoCompression, &filter_block_handle);
+    }
 
     if (ok()) {
         BlockBuilder metaindex_block(&r->options);
+        if (r->filter_block != nullptr) {
+            std::string key = "filter.";
+            key.append(r->options.filter_policy->Name());
+            std::string handle_encoding;
+            filter_block_handle.EncodeTo(&handle_encoding); 
+            metaindex_block.Add(Slice(key), Slice(handle_encoding));
+        }
         WriteBlock(&metaindex_block, &metaindex_handle);
     }
 

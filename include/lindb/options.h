@@ -36,7 +36,6 @@ struct Options {
     size_t max_file_size = 2 * 1024 * 1024;
     CompressionType compression = kNoCompression;
     bool reuse_logs = false;
-    // 还暂时没有 filter_policy.h/.cc
     const FilterPolicy* filter_policy = nullptr;
 };
 

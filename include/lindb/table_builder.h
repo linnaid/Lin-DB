@@ -24,6 +24,7 @@ public:
     void Add(const Slice& key, const Slice& value);
     void Flush();
     Status status() const;
+    // 在这里将 footer 写入SSTable
     Status Finish();
     void Abandon();
     uint64_t NumEntries() const;
@@ -32,6 +33,7 @@ public:
 private:
     bool ok() const { return status().ok(); }
     void WriteBlock(BlockBuilder* block, BlockHandle* handle);
+    // 在这里创建 BlockHandle
     void WriteRawBlock(const Slice& data, CompressionType type, BlockHandle* handle);
     struct Rep;
     Rep* rep_;
