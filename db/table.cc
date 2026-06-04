@@ -7,11 +7,13 @@
 #include <lindb/env.h>
 #include <lindb/options.h>
 #include <lindb/filter_policy.h>
-#include <lindb/comparator.h>
+#include <lindb/cache.h>
+// #include <lindb/comparator.h>
 
 #include "Lin-DB/db/format.h"
 #include "Lin-DB/db/two_level_iterator.h"
 #include "Lin-DB/db/filter_block.h"
+#include "Lin-DB/util/coding.h"
 
 namespace lindb {
 
@@ -24,6 +26,7 @@ struct Table::Rep {
 
     Options options;
     RandomAccessFile* file = nullptr;
+    uint64_t cache_id = 0;
     BlockHandle metaindex_handle;
     Block* index_block = nullptr;
     FilterBlockReader* filter = nullptr;
@@ -81,6 +84,10 @@ Status Table::Open(const Options& options, RandomAccessFile* file,
         rep->metaindex_handle = footer.metaindex_handle();
         rep->index_block = new Block(index_contents);
 
+        if (options.block_cache != nullptr) {
+            rep->cache_id = options.block_cache->NewId();
+        }
+
         *table = new Table(rep);
         (*table)->ReadMeta(footer);
         return Status::OK();
@@ -89,16 +96,40 @@ Status Table::Open(const Options& options, RandomAccessFile* file,
 Iterator* Table::BlockReader(void* arg, const ReadOptions& options, 
     const Slice& index_value) {
         const Table* table = reinterpret_cast<const Table*>(arg);
+        Cache* block_cache = table->rep_->options.block_cache;
+        Block* block = nullptr;
+        Cache::Handle* cache_handle = nullptr;
+
         BlockHandle handle;
         Slice input(index_value);
         Status status = handle.DecodeFrom(&input);
 
-        Block* block = nullptr;
         if (status.ok()) {
-            BlockContents contents;
-            status = ReadBlock(table->rep_->file, options, handle, &contents);
-            if (status.ok()) {
-                block = new Block(contents);
+            if (block_cache != nullptr) {
+                char cache_key[16];
+                EncodeFixed64(cache_key, table->rep_->cache_id);
+                EncodeFixed64(cache_key + 8, handle.offset());
+                Slice key(cache_key, sizeof(cache_key));
+
+                cache_handle = block_cache->Lookup(key);
+                if (cache_handle != nullptr) {
+                    block = reinterpret_cast<Block*>(block_cache->Value(cache_handle));
+                } else {
+                    BlockContents contents;
+                    status = ReadBlock(table->rep_->file, options, handle, &contents);
+                    if (status.ok()) {
+                        block = new Block(contents);
+                        if (contents.cachable && options.fill_cache) {
+                            cache_handle = block_cache->Insert(key, block, block->size(), &DeleteCachedBlock);
+                        }
+                    }
+                }
+            } else {
+                BlockContents contents;
+                status = ReadBlock(table->rep_->file, options, handle, &contents);
+                if (status.ok()) {
+                    block = new Block(contents);
+                }
             }
         }
 
@@ -107,7 +138,11 @@ Iterator* Table::BlockReader(void* arg, const ReadOptions& options,
         }
 
         Iterator* iterator = block->NewIterator(table->rep_->options.comparator);
-        iterator->RegisterCleanup(&DeleteBlock, block, nullptr);
+        if (cache_handle == nullptr) {
+            iterator->RegisterCleanup(&DeleteBlock, block, nullptr);
+        } else {
+            iterator->RegisterCleanup(&ReleaseCachedBlock, block_cache, cache_handle);
+        }
         return iterator;
     }
 
@@ -207,6 +242,15 @@ void Table::ReadFilter(const Slice& filter_handle_value) {
     }
 
     rep_->filter = new FilterBlockReader(rep_->options.filter_policy, contents.data);
+}
+
+void DeleteCachedBlock(const Slice& key, void* value) {
+    (void)key;
+    delete reinterpret_cast<Block*>(value);
+}
+
+void ReleaseCachedBlock(void* cache, void* handle) {
+    reinterpret_cast<Cache*>(cache)->Release(reinterpret_cast<Cache::Handle*>(handle));
 }
 
 }

@@ -18,6 +18,7 @@ add_library(lindb_core
     util/logging.cc
     util/env.cc
     util/bloom.cc 
+    util/cache.cc 
     db/db_impl.cc
     db/write_batch.cc
     db/dbformat.cc
