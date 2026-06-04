@@ -115,7 +115,9 @@ public:
         for (LRUEntry* e = lru_.next; e != &lru_; ) {
             LRUEntry* next = e->next;
             table_.Remove(e->key(), e->hash);
-            FreeEntry(e);
+            e->in_cache = false;
+            LRU_Remove(e);
+            Unref(e);
             e = next;
         }
     }
@@ -133,7 +135,7 @@ public:
                 e->key_length = key.size();
                 e->hash = hash;
                 e->in_cache = true;
-                e->refs = 1;
+                e->refs = 2;
                 std::memcpy(e->key_data, key.data(), key.size());
 
                 LRUEntry* old = table_.Insert(e);
@@ -144,12 +146,8 @@ public:
                     old->in_cache = false;
                     if (old->refs == 1) {
                         LRU_Remove(old);
-                        FreeEntry(old);
-                    } else {
-                        // 还有外部引用，推迟到最后一 Release 释放
-                        // 已从哈希表移除，从 lru_ 移到 in_use_(其实已在 in_use_)
-                        // 这里不释放，等外部 Release
-                    }
+                        Unref(old);
+                    } 
                 }
 
                 LRU_Append(&in_use_, e);
@@ -161,7 +159,7 @@ public:
                     if (erased) {
                         old_entry->in_cache = false;
                         LRU_Remove(old_entry);
-                        FreeEntry(old_entry);
+                        Unref(old_entry);
                     }
                 }
 
@@ -201,7 +199,7 @@ public:
                 e->in_cache = false;
                 if (e->refs == 1) {
                     LRU_Remove(e);
-                    FreeEntry(e);
+                    Unref(e);
                 } else {
                     // 有外部引用，延迟释放(最后一 Release 时释放)
                     // 但需要从 lru_ 移到适当位置
@@ -211,6 +209,7 @@ public:
     }
 
     uint64_t NewId() override {
+        // 不是多线程，所以直接静态变量递增，无需加锁或原子操作
         static uint64_t next_id = 0;
         return next_id++;
     }

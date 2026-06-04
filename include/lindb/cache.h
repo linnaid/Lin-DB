@@ -1,6 +1,8 @@
 // Cache 抽象接口 + NewLRUCache 工厂
 // 对外暴露缓存能力，Table/DB 不依赖具体 LRU 实现
 // handle 时不透明指针，调用方无法直接操作，只能通过接口访问
+#pragma once
+
 #include <cstddef>
 #include <cstdint>
 #include <lindb/slice.h>

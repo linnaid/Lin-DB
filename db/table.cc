@@ -35,6 +35,15 @@ struct Table::Rep {
 
 namespace {
 
+void DeleteCachedBlock(const Slice& key, void* value) {
+    (void)key;
+    delete reinterpret_cast<Block*>(value);
+}
+
+void ReleaseCachedBlock(void* cache, void* handle) {
+    reinterpret_cast<Cache*>(cache)->Release(reinterpret_cast<Cache::Handle*>(handle));
+}
+
 void DeleteBlock(void* arg, void* ignored) {
     (void)ignored;
     delete reinterpret_cast<Block*>(arg);
@@ -242,15 +251,6 @@ void Table::ReadFilter(const Slice& filter_handle_value) {
     }
 
     rep_->filter = new FilterBlockReader(rep_->options.filter_policy, contents.data);
-}
-
-void DeleteCachedBlock(const Slice& key, void* value) {
-    (void)key;
-    delete reinterpret_cast<Block*>(value);
-}
-
-void ReleaseCachedBlock(void* cache, void* handle) {
-    reinterpret_cast<Cache*>(cache)->Release(reinterpret_cast<Cache::Handle*>(handle));
 }
 
 }
