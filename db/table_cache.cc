@@ -92,6 +92,7 @@ Status TableCache::Get(const ReadOptions& options, uint64_t file_number, uint64_
     if (status.ok()) {
         TableAndFile* entry = reinterpret_cast<TableAndFile*>(cache_->Value(handle));
         status = entry->table->InternalGet(options, key, arg, handle_result);
+        cache_->Release(handle);
     }
     return status;
 }

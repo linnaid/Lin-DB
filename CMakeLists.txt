@@ -33,6 +33,8 @@ add_library(lindb_core
     db/two_level_iterator.cc
     db/filter_block.cc  
     db/table_cache.cc 
+    db/log_writer.cc 
+    db/log_reader.cc 
 )
 
 target_include_directories(lindb_core
