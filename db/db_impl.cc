@@ -4,6 +4,9 @@
 #include <utility>
 
 #include <lindb/write_batch.h>
+#include <lindb/env.h>
+#include <lindb/filename.h>
+
 #include "Lin-DB/db/write_batch_internal.h"
 
 
@@ -15,6 +18,34 @@ DBImpl::DBImpl(const Options& options, std::string dbname)
       internal_comparator_(options_.comparator),
       mem_(internal_comparator_),
       last_sequence_(0) {}
+
+DBImpl::~DBImpl() {
+    if (log_file_ != nullptr) {
+        (void)log_file_->Close();
+        delete log_file_;
+        log_file_ = nullptr;
+    }
+}
+
+Status DBImpl::InitWAL() {
+    if (!options_.env->FileExists(dbname_)) {
+        Status s = options_.env->CreateDir(dbname_);
+        if (!s.ok()) {
+            return s;
+        }
+    }
+
+    const std::string log_name = LogFileName(dbname_, 1);
+    WritableFile* file = nullptr;
+    Status s = options_.env->NewWritableFile(log_name, &file);
+    if (!s.ok()) {
+        return s;
+    }
+
+    log_file_ = file;
+    log_ = std::make_unique<log::Writer>(log_file_);
+    return Status::OK();
+}
 
 Status DBImpl::Put(const WriteOptions& options, const Slice& key, const Slice& value) {
     // (void)options;
@@ -34,8 +65,6 @@ Status DBImpl::Delete(const WriteOptions& options, const Slice& key) {
 }
 
 Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
-    (void)options;
-
     if (updates == nullptr) {
         return Status::InvalidArgument("DBImpl::Write updates is null");
     }
@@ -46,10 +75,22 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
     }
 
     assert(last_sequence_ <= kMaxSequenceNumber - static_cast<SequenceNumber>(count));
-    const SequenceNumber frist_sequence = last_sequence_ + 1;
-    WriteBatchInternal::SetSequence(updates, frist_sequence);
+    const SequenceNumber first_sequence = last_sequence_ + 1;
+    WriteBatchInternal::SetSequence(updates, first_sequence);
 
-    Status s = WriteBatchInternal::InsertInto(updates, &mem_);
+    Status s = log_->AddRecord(WriteBatchInternal::Contents(updates));
+    if (!s.ok()) {
+        return s;
+    }
+
+    if (options.sync) {
+        s = log_file_->Sync();
+        if (!s.ok()) {
+            return s;
+        }
+    }
+
+    s = WriteBatchInternal::InsertInto(updates, &mem_);
     if(s.ok()) {
         last_sequence_ += static_cast<SequenceNumber>(count);
     }
@@ -79,6 +120,10 @@ SequenceNumber DBImpl::NewSequence() {
     return last_sequence_;
 }
 
+Status DBImpl::Open() {
+    return InitWAL();
+}
+
 Status DB::Open(const Options& options, const std::string& dbname, DB** dbptr) {
     if (dbptr == nullptr) {
         return Status::InvalidArgument("DB::Open dbptr is null");
@@ -90,7 +135,15 @@ Status DB::Open(const Options& options, const std::string& dbname, DB** dbptr) {
         return Status::InvalidArgument("DB::Open comparator is null");
     }
 
-    *dbptr = new DBImpl(options, dbname);
+    DBImpl* impl = new DBImpl(options, dbname);
+
+    Status s = impl->Open();
+    if (!s.ok()) {
+        delete impl;
+        return s;
+    }
+
+    *dbptr = impl;
     return Status::OK();
 }
 

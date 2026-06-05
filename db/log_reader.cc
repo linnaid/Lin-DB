@@ -52,7 +52,7 @@ bool Reader::ReadRecord(std::string* record, Status* status) {
 
         case kLastType:
             if (!in_fragmented_record) {
-                *status = Status::Corruption("missing start of frafmented WAL record");
+                *status = Status::Corruption("missing start of fragmented WAL record");
                 return false;
             }
             scratch.append(fragment.data(), fragment.size());
@@ -78,71 +78,74 @@ bool Reader::ReadRecord(std::string* record, Status* status) {
 unsigned int Reader::ReadPhysicalRecord(Slice* result, Status* status) {
     while (true) {
         if (buffer_.size() < kHeaderSize) {
+            if (eof_) {
+                if (!buffer_.empty()) {
+                    buffer_.clear();
+                    *status = Status::Corruption("truncated WAL record header");
+                    return kBadRecord;
+                }
+                return kEof;
+            }
+            Slice block;
+            Status read_status = file_->Read(kBlockSize, &block, backing_store_);
+            if (!read_status.ok()) {
+                *status = read_status;
+                eof_ = true;
+                return kBadRecord;
+            }
+
+            buffer_ = block;
+            eof_ = buffer_.size() < kBlockSize;
+            if (buffer_.empty()) {
+                return kEof;
+            }
+
+            if (buffer_.size() < kHeaderSize) {
+                buffer_.clear();
+                *status = Status::Corruption("truncated WAL record header");
+                return kBadRecord;
+            }
+        }
+        const char* header = buffer_.data();
+        const uint32_t stored_crc = DecodeFixed32(header);
+        const uint32_t length = static_cast<unsigned char>(header[4]) | (static_cast<uint32_t>(static_cast<unsigned char>(header[5])) << 8);
+        const unsigned int type = static_cast<unsigned char>(header[6]);
+
+        if (kHeaderSize + length > buffer_.size()) {
+            buffer_.clear();
+            if (!eof_) {
+                *status = Status::Corruption("bad WAL record length");
+                return kBadRecord;
+            }
             return kEof;
         }
 
-        Slice block;
-        Status read_status = file_->Read(kBlockSize, &block, backing_store_);
-        if (!read_status.ok()) {
-            *status = read_status;
-            eof_ = true;
+        if (type == kZeroType && length == 0) {
+            buffer_.clear();
             return kBadRecord;
         }
 
-        buffer_ = block;
-        if (buffer_.empty()) {
-            eof_ = true;
-            return kEof;
-        }
-
-        if (buffer_.size() < kHeaderSize) {
-            eof_ = true;
-            *status = Status::Corruption("truncated WAL record header");
-            return kBadRecord;
-        }
-    }
-
-    const char* header = buffer_.data();
-    const uint32_t stored_crc = DecodeFixed32(header);
-    const uint32_t length = static_cast<unsigned char>(header[4]) | (static_cast<uint32_t>(static_cast<unsigned char>(header[5])) << 8);
-    const unsigned int type = static_cast<unsigned char>(header[6]);
-
-    if (kHeaderSize + length > buffer_.size()) {
-        buffer_.clear();
-        if (!eof_) {
-            *status = Status::Corruption("bad WAL record length");
-            return kBadRecord;
-        }
-        return kEof;
-    }
-
-    if (type == kZeroType && length == 0) {
-        buffer_.clear();
-        return kBadRecord;
-    }
-
-    if (type > kMaxRecordType) {
-        *status = Status::Corruption("unknown WAL record type");
-        return kBadRecord;
-    }
-
-    const char* payload = header + kHeaderSize;
-    if (checksum_) {
-        uint32_t actual_crc = crc32c::Value(header + 6, 1);
-
-        if (crc32c::Unmask(stored_crc) != actual_crc) {
+        if (type > kMaxRecordType) {
             buffer_.remove_prefix(kHeaderSize + length);
-            *status = Status::Corruption("WAL record checksum mismatch");
+            *status = Status::Corruption("unknown WAL record type");
             return kBadRecord;
         }
+
+        const char* payload = header + kHeaderSize;
+        if (checksum_) {
+            uint32_t actual_crc = crc32c::Value(header + 6, 1);
+            actual_crc = crc32c::Extend(actual_crc, payload, length);
+            if (crc32c::Unmask(stored_crc) != actual_crc) {
+                buffer_.clear();
+                *status = Status::Corruption("WAL record checksum mismatch");
+                return kBadRecord;
+            }
+        }
+        *result = Slice(payload, length);
+        buffer_.remove_prefix(kHeaderSize + length);
+        return type;
     }
-
-    *result = Slice(payload, length);
-    buffer_.remove_prefix(kHeaderSize + length);
-    return type;
 }
 
 }
-
-
 }
