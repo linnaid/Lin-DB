@@ -35,6 +35,8 @@ add_library(lindb_core
     db/table_cache.cc 
     db/log_writer.cc 
     db/log_reader.cc 
+    db/version_edit.cc 
+    db/version_set.cc 
 )
 
 target_include_directories(lindb_core

@@ -68,7 +68,7 @@ void VersionEdit::SetComparatorName(const Slice& name) {
 }
 
 void VersionEdit::SetLogNumber(uint64_t number) {
-    has_last_sequence_ = true;
+    has_log_number_ = true;
     log_number_ = number;
 }
 
@@ -113,7 +113,7 @@ void VersionEdit::EncodeTo(std::string* dst) const {
     }
     if (has_last_sequence_) {
         PutVarint32(dst, kLastSequence);
-        PutVarint32(dst, last_sequence_);
+        PutVarint64(dst, last_sequence_);
     }
     for (const auto& deleted_file : deleted_files_) {
         PutVarint32(dst, kDeletedFile);
@@ -198,9 +198,11 @@ Status VersionEdit::DecodeFrom(const Slice& src) {
                 !GetVarint64(&input, &file_number) ||
                 !GetVarint64(&input, &file_size) ||
                 !GetInternalKey(&input, &smallest) ||
-                !GetInternalKey(&input, &smallest)) {
-                    break;
+                !GetInternalKey(&input, &largest)) {
+                    return InvalidVersionEdit("bad new file");
             }
+            AddFile(level, file_number, file_size, smallest, largest);
+            break;
         }
         
         default:
