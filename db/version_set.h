@@ -19,7 +19,7 @@ class TableCache;
 // 某一时刻的 SSTable 元数据快照
 class Version {
 public:
-    explicit Version(const InternalKeyComparator* comparator);
+    explicit Version(const InternalKeyComparator* comparator, TableCache* table_cache = nullptr);
     Version(const Version& other);
     Version& operator=(const Version& other);
 
@@ -30,10 +30,14 @@ public:
     void AddFile(int level, const FileMetaData& file);
     void RemoveFile(int level, uint64_t file_number);
     void SortFiles();
+    Status Get(const ReadOptions& options, const LookupKey& key, std::string* value) const;
+    // 判断user_key 是否落在文件 smallest/largest 范围内
+    bool FileMayContainUserkey(const FileMetaData* file, const Slice& user_key) const;
 
 private:
     const InternalKeyComparator* comparator_;
     std::vector<FileMetaData*> files_[kNumLevels];
+    TableCache* table_cache_;
 };
 
 // 管理当前 Version，文件号/log/sequence 等版本级元数据

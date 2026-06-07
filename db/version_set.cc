@@ -1,15 +1,62 @@
 #include "Lin-DB/db/version_set.h"
 
+#include "Lin-DB/db/table_cache.h"
+
 #include <algorithm>
 #include <cassert>
 
 namespace lindb {
-Version::Version(const InternalKeyComparator* comparator)
-    : comparator_(comparator) {
+namespace {
+enum SaverState {
+    kNotFound,
+    kFound,
+    kDeleted,
+    kCorrupt,
+};
+
+struct Saver {
+    SaverState state;
+    const Comparator* user_comparator;
+    Slice user_key;
+    std::string* value;
+};
+
+void SaveValue(void* arg, const Slice& internal_key, const Slice& value) {
+    Saver* saver = reinterpret_cast<Saver*>(arg);
+    ParsedInternalKey parsed_key;
+    if (!ParseInternalKey(internal_key, &parsed_key)) {
+        saver->state = kCorrupt;
+        return;
+    }
+    if (saver->user_comparator->Compare(parsed_key.user_key, saver->user_key)!= 0) {
+        return;
+    }
+    if (parsed_key.type == kTypeValue) {
+        saver->state = kFound;
+        saver->value->assign(value.data(), value.size());
+        return;
+    }
+    if (parsed_key.type == kTypeDeletion) {
+        saver->state = kDeleted;
+        return;
+    }
+    saver->state = kCorrupt;
+}
+
+bool NewestFileFirst(const FileMetaData* left, const FileMetaData* right) {
+    return left->number > right->number;
+}
+
+}
+
+Version::Version(const InternalKeyComparator* comparator, TableCache* table_cache)
+    : comparator_(comparator), 
+      table_cache_(table_cache) {
     assert(comparator_ != nullptr);
 }
 Version::Version(const Version& other)
-    : comparator_(other.comparator_) {
+    : comparator_(other.comparator_), 
+      table_cache_(other.table_cache_) {
     assert(comparator_ != nullptr);
     for (int level_index = 0; level_index < kNumLevels; ++level_index) {
         for (const FileMetaData* file : other.files_[level_index]) {
@@ -28,6 +75,7 @@ Version& Version::operator=(const Version& other) {
         files_[level_index].clear();
     }
     comparator_ = other.comparator_;
+    table_cache_ = other.table_cache_;
     assert(comparator_ != nullptr);
     for (int level_index = 0; level_index < kNumLevels; ++level_index) {
         for (const FileMetaData* file : other.files_[level_index]) {
@@ -84,6 +132,53 @@ void Version::SortFiles() {
     }
 }
 
+bool Version::FileMayContainUserkey(const FileMetaData* file, const Slice& user_key) const {
+    assert(file != nullptr);
+    const Comparator* user_comparator = comparator_->user_comparator();
+    if (user_comparator->Compare(user_key, file->smallest.user_key()) < 0) {
+        return false;
+    }
+    if (user_comparator->Compare(user_key, file->largest.user_key()) > 0) {
+        return false;
+    }
+    return true;
+}
+
+Status Version::Get(const ReadOptions& options, const LookupKey& key, std::string* value) const {
+    assert(value != nullptr);
+    if (table_cache_ == nullptr) {
+        return Status::NotFound(key.user_key());
+    }
+    std::vector<FileMetaData*> candidates;
+    for (FileMetaData* file : files_[0]) {
+        if (FileMayContainUserkey(file, key.user_key())) {
+            candidates.push_back(file);
+        }
+    }
+    std::sort(candidates.begin(), candidates.end(), NewestFileFirst);
+    Saver saver;
+    saver.user_comparator = comparator_->user_comparator();
+    saver.user_key = key.user_key();
+    saver.value = value;
+    for (FileMetaData* file : candidates) {
+        saver.state = kNotFound;
+        Status status = table_cache_->Get(options, file->number, file->file_size, key.internal_key(), &saver, SaveValue);
+        if (!status.ok()) {
+            return status;
+        }
+        if (saver.state == kFound) {
+            return Status::OK();
+        }
+        if (saver.state == kDeleted) {
+            return Status::NotFound(key.user_key());
+        }
+        if (saver.state == kCorrupt) {
+            return Status::Corruption("corrupted key for", key.user_key());
+        }
+    }
+    return Status::NotFound(key.user_key());
+}
+
 VersionSet::VersionSet(const std::string& dbname, const Options* options, TableCache* table_cache, 
                        const InternalKeyComparator* comparator)
     : dbname_(dbname), 
@@ -93,7 +188,7 @@ VersionSet::VersionSet(const std::string& dbname, const Options* options, TableC
       next_file_number_(2), 
       log_number_(0), 
       last_sequence_(0), 
-      current_(new Version(comparator)) {
+      current_(new Version(comparator, table_cache)) {
     assert(options_ != nullptr);
     assert(comparator_ != nullptr);
 }  
