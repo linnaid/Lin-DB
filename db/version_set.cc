@@ -144,6 +144,30 @@ bool Version::FileMayContainUserkey(const FileMetaData* file, const Slice& user_
     return true;
 }
 
+const FileMetaData* Version::FindFileInLevel(int level, const Slice& user_key) const {
+    assert(level > 0 && level < kNumLevels);
+    const Comparator* user_comparator = comparator_->user_comparator();
+    size_t left = 0;
+    size_t right = files_[level].size();
+    while (left < right) {
+        const size_t middle = left + (right - left)/2;
+        const FileMetaData* file = files_[level][middle];
+        if (user_comparator->Compare(file->largest.user_key(), user_key) < 0) {
+            left = middle + 1;
+        } else {
+            right = middle;
+        }
+    }
+    if (left >= files_[level].size()) {
+        return nullptr;
+    }
+    const FileMetaData* file = files_[level][left];
+    if (user_comparator->Compare(user_key, file->smallest.user_key()) < 0) {
+        return nullptr;
+    }
+    return file;
+}
+
 Status Version::Get(const ReadOptions& options, const LookupKey& key, std::string* value) const {
     assert(value != nullptr);
     if (table_cache_ == nullptr) {
@@ -176,6 +200,28 @@ Status Version::Get(const ReadOptions& options, const LookupKey& key, std::strin
             return Status::Corruption("corrupted key for", key.user_key());
         }
     }
+
+    for (int level = 1; level < kNumLevels; ++level) {
+        const FileMetaData* file = FindFileInLevel(level, key.user_key());
+        if (file == nullptr) {
+            continue;
+        }
+        saver.state = kNotFound;
+        Status status = table_cache_->Get(options, file->number, file->file_size, key.internal_key(), &saver, SaveValue);
+        if (!status.ok()) {
+            return status;
+        }
+        if (saver.state == kFound) {
+            return Status::OK();
+        }
+        if (saver.state == kDeleted) {
+            return Status::NotFound(key.user_key());
+        }
+        if (saver.state == kCorrupt) {
+            return Status::Corruption("corrupted key for", key.user_key());
+        }
+    }
+    
     return Status::NotFound(key.user_key());
 }
 

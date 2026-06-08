@@ -1,5 +1,4 @@
 // 声明 VersionSet, Version 最小内存版本管理接口
-// 本文件只放接口，不做 MANIFEST/Get/Recover
 #pragma once
 
 #include <cstdint>
@@ -35,6 +34,8 @@ public:
     bool FileMayContainUserkey(const FileMetaData* file, const Slice& user_key) const;
 
 private:
+    const FileMetaData* FindFileInLevel(int level, const Slice& user_key) const;
+    
     const InternalKeyComparator* comparator_;
     std::vector<FileMetaData*> files_[kNumLevels];
     TableCache* table_cache_;
