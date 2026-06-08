@@ -21,6 +21,8 @@ constexpr int kNumLevels = 7;
 // 描述一个 SSTable 文件的元数据
 struct FileMetaData {
     int refs = 0;
+    // 记录文件还能承受多少次额外 seek，耗尽后可成为 compaction 候选
+    int allowed_seeks = 1 << 30;
     uint64_t number = 0;
     uint64_t file_size = 0;
     InternalKey smallest;

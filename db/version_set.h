@@ -24,21 +24,34 @@ public:
 
     ~Version();
 
+    struct GetStats {
+        FileMetaData* seek_file = nullptr;
+        int seek_file_level;
+    };
+
     int NumFiles(int level) const;
     const FileMetaData* File(int level, size_t index) const;
     void AddFile(int level, const FileMetaData& file);
     void RemoveFile(int level, uint64_t file_number);
     void SortFiles();
     Status Get(const ReadOptions& options, const LookupKey& key, std::string* value) const;
+    Status Get(const ReadOptions& options, const LookupKey& key, std::string* value, GetStats* stats) const;
     // 判断user_key 是否落在文件 smallest/largest 范围内
     bool FileMayContainUserkey(const FileMetaData* file, const Slice& user_key) const;
+    bool UpdateStats(const GetStats& stats);
+    FileMetaData* FileToCompact() const;
+    int FileToCompactLevel() const;
 
 private:
     const FileMetaData* FindFileInLevel(int level, const Slice& user_key) const;
-    
+
     const InternalKeyComparator* comparator_;
     std::vector<FileMetaData*> files_[kNumLevels];
     TableCache* table_cache_;
+
+    // 保存 seek 触发的 compaction 候选文件
+    FileMetaData* file_to_compact_ = nullptr;
+    int file_to_compact_level_ = -1;
 };
 
 // 管理当前 Version，文件号/log/sequence 等版本级元数据
