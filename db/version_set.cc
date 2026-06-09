@@ -1,6 +1,11 @@
 #include "Lin-DB/db/version_set.h"
 
+#include <lindb/env.h>
+#include <lindb/filename.h>
+
 #include "Lin-DB/db/table_cache.h"
+#include "Lin-DB/db/log_reader.h"
+#include "Lin-DB/db/log_writer.h"
 
 #include <algorithm>
 #include <cassert>
@@ -277,13 +282,17 @@ int Version::FileToCompactLevel() const {
 
 VersionSet::VersionSet(const std::string& dbname, const Options* options, TableCache* table_cache, 
                        const InternalKeyComparator* comparator)
-    : dbname_(dbname), 
+    : env_(options->env), 
+      dbname_(dbname), 
       options_(options), 
       table_cache_(table_cache), 
       comparator_(comparator), 
       next_file_number_(2), 
       log_number_(0), 
       last_sequence_(0), 
+      manifest_file_number_(0), 
+      descriptor_file_(nullptr), 
+      descriptor_log_(nullptr), 
       current_(new Version(comparator, table_cache)) {
     assert(options_ != nullptr);
     assert(comparator_ != nullptr);
@@ -291,6 +300,142 @@ VersionSet::VersionSet(const std::string& dbname, const Options* options, TableC
 
 VersionSet::~VersionSet() {
     delete current_;
+    descriptor_log_.reset();
+    if (descriptor_file_ != nullptr) {
+        (void)descriptor_file_->Close();
+        delete descriptor_file_;
+        descriptor_file_ = nullptr;
+    }
+}
+
+Status VersionSet::LogAndApply(VersionEdit* edit) {
+    assert(edit != nullptr);
+    Status status = CheckComparatorName(*edit);
+    if (!status.ok()) { return status; }
+    
+    bool created_manifest = false;
+    std::string manifest_name;
+
+    if (descriptor_log_ == nullptr) {
+        if (manifest_file_number_ == 0) {
+            manifest_file_number_ = NewFileNumber();
+        }
+        manifest_name = DescriptorFileName(dbname_, manifest_file_number_);
+        status = env_->NewWritableFile(manifest_name, &descriptor_file_);
+        if (status.ok()) {
+            descriptor_log_ = std::make_unique<log::Writer>(descriptor_file_);
+        }
+        if (status.ok()) {
+            status = WriteSnapshot(descriptor_log_.get());
+        }
+        created_manifest = status.ok();
+    }
+
+    if (status.ok() && !edit->has_comparator()) {
+        edit->SetComparatorName(Slice(comparator_->Name()));
+    }
+    if (status.ok() && !edit->has_log_number()) {
+        edit->SetLogNumber(log_number_);
+    }
+    if (status.ok() && !edit->has_next_file_number()) {
+        edit->SetNextFile(next_file_number_);
+    }
+    if (status.ok() && !edit->has_last_sequence()) {
+        edit->SetLastSequence(last_sequence_);
+    }
+
+    std::string record;
+    if (status.ok()) {
+        edit->EncodeTo(&record);
+    }
+    if (status.ok()) {
+        status = descriptor_log_->AddRecord(Slice(record));
+    }
+    if (status.ok()) {
+        status = descriptor_file_->Sync();
+    }
+    if (status.ok() && created_manifest) {
+        status = SetCurrentFile(env_, dbname_, manifest_file_number_);
+    }
+    if (status.ok()) {
+        status = ApplyVersionEdit(edit);
+    }
+
+    if (!status.ok() && created_manifest) {
+        descriptor_log_.reset();
+        delete descriptor_file_;
+        descriptor_file_ = nullptr;
+        env_->RemoveFile(manifest_name);
+    }
+    return status;
+}
+
+Status VersionSet::Recover() {
+    std::string current;
+    Status status = ReadFileToString(env_, CurrentFileName(dbname_), &current);
+    if (!status.ok()) {
+        return status;
+    }
+    if (!current.empty() && current.back() == '\n') {
+        current.pop_back();
+    }
+    if (current.empty()) {
+        return Status::Corruption("CURRENT file is empty");
+    }
+
+    uint64_t manifest_number = 0;
+    FileType file_type;
+    if (!ParseFileName(current, &manifest_number, &file_type) || file_type != kDescriptorFile) {
+        return Status::Corruption("CURRENT points to invalid MANIFEST", current);
+    }
+
+    SequentialFile* file = nullptr;
+    status = env_->NewSequentialFile(dbname_ + "/" + current, &file);
+    if (!status.ok()) {
+        return status;
+    }
+
+    delete current_;
+    current_ = new Version(comparator_, table_cache_);
+    next_file_number_ = 2;
+    log_number_ = 0;
+    last_sequence_ = 0;
+
+    log::Reader reader(file, true);
+    std::string record;
+    Status read_status;
+    while (reader.ReadRecord(&record, &read_status)) {
+        VersionEdit edit;
+        status = edit.DecodeFrom(Slice(record));
+        if (!status.ok()) { break; }
+        status = ApplyVersionEdit(&edit);
+        if (!status.ok()) { break; }
+    }
+
+    if (status.ok() && !read_status.ok()) {
+        status = read_status;
+    }
+    delete file;
+    if (status.ok()) {
+        manifest_file_number_ = manifest_number;
+    }
+    return status;
+}
+
+Status VersionSet::WriteSnapshot(log::Writer* writer) const {
+    assert(writer != nullptr);
+    VersionEdit snapshot;
+    snapshot.SetComparatorName(Slice(comparator_->Name()));
+    snapshot.SetLastSequence(last_sequence_);
+    for (int level = 0; level < kNumLevels; ++level) {
+        for (int index = 0; index < current_->NumFiles(level); ++index) {
+            const FileMetaData* file = current_->File(level, index);
+            snapshot.AddFile(level, file->number, file->file_size, file->smallest, file->largest);
+        }
+    }
+    std::string record;
+    snapshot.EncodeTo(&record);
+    return writer->AddRecord(Slice(record));
 }
 
 Status VersionSet::ApplyVersionEdit(VersionEdit* edit) {

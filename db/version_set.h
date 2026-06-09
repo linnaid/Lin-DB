@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <string>
 #include <vector>
+#include <memory>
 
 #include <lindb/options.h>
 #include <lindb/status.h>
@@ -13,7 +14,13 @@
 #include "Lin-DB/db/version_edit.h"
 
 namespace lindb {
+
+namespace log {
+    class Writer;
+}
+
 class TableCache;
+class WritableFile;
 
 // 某一时刻的 SSTable 元数据快照
 class Version {
@@ -65,10 +72,15 @@ public:
 
     ~VersionSet();
 
+    // 把 Version 写入 MANIFEST，并安装成新的当前 Version
+    Status LogAndApply(VersionEdit* edit);
+    Status Recover();
+
     // 把 VersionEdit 应用到 current_，生成并安装新 Version
     Status ApplyVersionEdit(VersionEdit* edit);
     Version* current() const;
     uint64_t NewFileNumber();
+
     // 标记某个文件号已被使用，避免重新分配
     void MarkFileNumberUsed(uint64_t number);
     SequenceNumber LastSequence() const;
@@ -78,6 +90,11 @@ private:
     Status CheckComparatorName(const VersionEdit& edit) const;
     void ApplyMetadata(const VersionEdit& edit);
 
+    // 把当前完整 Version 写成 MANIFEST snapshot
+    Status WriteSnapshot(log::Writer* writer) const;
+
+    // 保存文件系统环境，供 MANIFEST/CURRENT 读写使用
+    Env* env_;
     std::string dbname_;
     const Options* options_;
     TableCache* table_cache_;
@@ -85,6 +102,12 @@ private:
     uint64_t next_file_number_;
     uint64_t log_number_;
     SequenceNumber last_sequence_;
+    // 当前 MANIFEST 文件号
+    uint64_t manifest_file_number_;
+
+    // 当前打开 MANIFEST 文件句柄
+    WritableFile* descriptor_file_;
+    std::unique_ptr<log::Writer> descriptor_log_;
     Version* current_;
 };
 

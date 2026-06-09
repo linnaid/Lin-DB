@@ -74,6 +74,8 @@ public:
     virtual Status Read(uint64_t offset, size_t n, Slice* result, char* scratch) const = 0;
 };
 
+// 写文件接口(抽象基类)
+// 屏蔽具体操作系统和文件实现的差异，为DB提供统一"顺序写文件能力"
 class WritableFile {
 public:
     WritableFile() = default;
