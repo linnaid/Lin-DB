@@ -26,7 +26,7 @@ public:
 
     struct GetStats {
         FileMetaData* seek_file = nullptr;
-        int seek_file_level;
+        int seek_file_level = -1;
     };
 
     int NumFiles(int level) const;
@@ -38,12 +38,13 @@ public:
     Status Get(const ReadOptions& options, const LookupKey& key, std::string* value, GetStats* stats) const;
     // 判断user_key 是否落在文件 smallest/largest 范围内
     bool FileMayContainUserkey(const FileMetaData* file, const Slice& user_key) const;
+    // 检测读放大并标记 seek
     bool UpdateStats(const GetStats& stats);
     FileMetaData* FileToCompact() const;
     int FileToCompactLevel() const;
 
 private:
-    const FileMetaData* FindFileInLevel(int level, const Slice& user_key) const;
+    FileMetaData* FindFileInLevel(int level, const Slice& user_key) const;
 
     const InternalKeyComparator* comparator_;
     std::vector<FileMetaData*> files_[kNumLevels];

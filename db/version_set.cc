@@ -76,6 +76,8 @@ Version& Version::operator=(const Version& other) {
     }
     comparator_ = other.comparator_;
     table_cache_ = other.table_cache_;
+    file_to_compact_ = nullptr;
+    file_to_compact_level_ = -1;
     assert(comparator_ != nullptr);
     for (int level_index = 0; level_index < kNumLevels; ++level_index) {
         for (const FileMetaData* file : other.files_[level_index]) {
@@ -144,7 +146,7 @@ bool Version::FileMayContainUserkey(const FileMetaData* file, const Slice& user_
     return true;
 }
 
-const FileMetaData* Version::FindFileInLevel(int level, const Slice& user_key) const {
+FileMetaData* Version::FindFileInLevel(int level, const Slice& user_key) const {
     assert(level > 0 && level < kNumLevels);
     const Comparator* user_comparator = comparator_->user_comparator();
     size_t left = 0;
@@ -161,7 +163,7 @@ const FileMetaData* Version::FindFileInLevel(int level, const Slice& user_key) c
     if (left >= files_[level].size()) {
         return nullptr;
     }
-    const FileMetaData* file = files_[level][left];
+    FileMetaData* file = files_[level][left];
     if (user_comparator->Compare(user_key, file->smallest.user_key()) < 0) {
         return nullptr;
     }
@@ -169,10 +171,19 @@ const FileMetaData* Version::FindFileInLevel(int level, const Slice& user_key) c
 }
 
 Status Version::Get(const ReadOptions& options, const LookupKey& key, std::string* value) const {
+    GetStats stats;
+    return Get(options, key, value, &stats);
+}
+
+Status Version::Get(const ReadOptions& options, const LookupKey& key, std::string* value, GetStats* stats) const {
     assert(value != nullptr);
+    assert(stats != nullptr);
+    stats->seek_file = nullptr;
+    stats->seek_file_level = -1;
     if (table_cache_ == nullptr) {
         return Status::NotFound(key.user_key());
     }
+    
     std::vector<FileMetaData*> candidates;
     for (FileMetaData* file : files_[0]) {
         if (FileMayContainUserkey(file, key.user_key())) {
@@ -180,13 +191,30 @@ Status Version::Get(const ReadOptions& options, const LookupKey& key, std::strin
         }
     }
     std::sort(candidates.begin(), candidates.end(), NewestFileFirst);
+
     Saver saver;
     saver.user_comparator = comparator_->user_comparator();
     saver.user_key = key.user_key();
     saver.value = value;
+
+    FileMetaData* last_file_read = nullptr;
+    int last_file_read_level = -1;
+
+    auto read_file = [&](FileMetaData* file, int level) -> Status {
+        if (stats->seek_file == nullptr && last_file_read != nullptr) {
+            stats->seek_file = last_file_read;
+            stats->seek_file_level = last_file_read_level;
+        }
+        last_file_read = file;
+        last_file_read_level = level;
+        saver.state = kNotFound;
+        return table_cache_->Get(options, file->number, file->file_size, key.internal_key(), &saver, SaveValue);
+    };
+
     for (FileMetaData* file : candidates) {
         saver.state = kNotFound;
-        Status status = table_cache_->Get(options, file->number, file->file_size, key.internal_key(), &saver, SaveValue);
+        Status status = read_file(file, 0);
+        // Status status = table_cache_->Get(options, file->number, file->file_size, key.internal_key(), &saver, SaveValue);
         if (!status.ok()) {
             return status;
         }
@@ -202,12 +230,13 @@ Status Version::Get(const ReadOptions& options, const LookupKey& key, std::strin
     }
 
     for (int level = 1; level < kNumLevels; ++level) {
-        const FileMetaData* file = FindFileInLevel(level, key.user_key());
+        FileMetaData* file = FindFileInLevel(level, key.user_key());
         if (file == nullptr) {
             continue;
         }
-        saver.state = kNotFound;
-        Status status = table_cache_->Get(options, file->number, file->file_size, key.internal_key(), &saver, SaveValue);
+        Status status = read_file(file, level);
+        // saver.state = kNotFound;
+        // Status status = table_cache_->Get(options, file->number, file->file_size, key.internal_key(), &saver, SaveValue);
         if (!status.ok()) {
             return status;
         }
@@ -223,6 +252,27 @@ Status Version::Get(const ReadOptions& options, const LookupKey& key, std::strin
     }
     
     return Status::NotFound(key.user_key());
+}
+
+bool Version::UpdateStats(const GetStats& stats) {
+    FileMetaData* file = stats.seek_file;
+    if (file != nullptr) {
+        --file->allowed_seeks;
+        if (file->allowed_seeks <= 0 && file_to_compact_ == nullptr) {
+            file_to_compact_ = file;
+            file_to_compact_level_ = stats.seek_file_level;
+            return true;
+        }
+    }
+    return false;
+}
+
+FileMetaData* Version::FileToCompact() const {
+    return file_to_compact_;
+}
+
+int Version::FileToCompactLevel() const {
+    return file_to_compact_level_;
 }
 
 VersionSet::VersionSet(const std::string& dbname, const Options* options, TableCache* table_cache, 
