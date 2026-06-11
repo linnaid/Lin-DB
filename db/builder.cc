@@ -22,7 +22,6 @@ Status BuildTable(const std::string& dbname, Env* env, const Options& options, I
     meta->file_size = 0;
     meta->smallest.Clear();
     meta->largest.Clear();
-
     iter->SeekToFirst();
     if (!iter->Valid()) {
         return iter->status();
@@ -50,6 +49,10 @@ Status BuildTable(const std::string& dbname, Env* env, const Options& options, I
     } else {
         builder.Abandon();
         status = iter->status();
+    }
+    
+    if (status.ok()) {
+        status = file->Sync();
     }
 
     if (status.ok()) {
