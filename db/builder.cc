@@ -38,7 +38,7 @@ Status BuildTable(const std::string& dbname, Env* env, const Options& options, I
     TableBuilder builder(options, file.get());
 
     meta->smallest.DecodeFrom(iter->key());
-    for (; iter->Valid(); iter->key()) {
+    for (; iter->Valid(); iter->Next()) {
         const Slice key = iter->key();
         meta->largest.DecodeFrom(key);
         builder.Add(key, iter->value());

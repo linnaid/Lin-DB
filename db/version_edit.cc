@@ -90,6 +90,11 @@ void VersionEdit::AddFile(int level, uint64_t file_number, uint64_t file_size,
     file.file_size = file_size;
     file.smallest = smallest;
     file.largest = largest;
+    AddFile(level, file);
+}
+
+void VersionEdit::AddFile(int level, const FileMetaData& file) {
+    assert(level >= 0 && level < kNumLevels);
     new_files_.push_back(std::make_pair(level, file));
 }
 

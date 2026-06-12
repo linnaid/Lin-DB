@@ -6,20 +6,47 @@
 #include <lindb/write_batch.h>
 #include <lindb/env.h>
 #include <lindb/filename.h>
+#include <lindb/iterator.h>
 
 #include "Lin-DB/db/write_batch_internal.h"
-
+#include "Lin-DB/db/table_cache.h"
+#include "Lin-DB/db/version_set.h"
+#include "Lin-DB/db/builder.h"
+#include "Lin-DB/db/version_edit.h"
 
 namespace lindb {
+namespace {
+Options MakeTableOptions(const Options& options, const InternalKeyComparator* internal_comparator) {
+    Options table_options = options;
+    table_options.comparator = internal_comparator;
+    return table_options;
+}
+
+int TableCacheEntries(int max_open_files) {
+    const int reserved_files = 10;
+    if (max_open_files > reserved_files) {
+        return max_open_files - reserved_files;
+    }
+    return 1;
+}
+
+}
+
 
 DBImpl::DBImpl(const Options& options, std::string dbname)
     : options_(options),
       dbname_(std::move(dbname)),
       internal_comparator_(options_.comparator),
-      mem_(internal_comparator_),
-      last_sequence_(0) {}
+      table_options_(MakeTableOptions(options_, &internal_comparator_)), 
+      table_cache_(dbname_, table_options_, TableCacheEntries(options_.max_open_files)),  
+      versions_(dbname_, &table_options_, &table_cache_, &internal_comparator_), 
+      mem_(std::make_unique<MemTable>(internal_comparator_)),
+      imm_(nullptr), 
+      last_sequence_(0), 
+      logfile_number_(1) {}
 
 DBImpl::~DBImpl() {
+    log_.reset();
     if (log_file_ != nullptr) {
         (void)log_file_->Close();
         delete log_file_;
@@ -35,7 +62,7 @@ Status DBImpl::InitWAL() {
         }
     }
 
-    const std::string log_name = LogFileName(dbname_, 1);
+    const std::string log_name = LogFileName(dbname_, logfile_number_);
     WritableFile* file = nullptr;
     Status s = options_.env->NewWritableFile(log_name, &file);
     if (!s.ok()) {
@@ -74,11 +101,16 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
         return Status::OK();
     }
 
+    Status s = MakeRoomForWrite();
+    if (!s.ok()) {
+        return s;
+    }
+
     assert(last_sequence_ <= kMaxSequenceNumber - static_cast<SequenceNumber>(count));
     const SequenceNumber first_sequence = last_sequence_ + 1;
     WriteBatchInternal::SetSequence(updates, first_sequence);
 
-    Status s = log_->AddRecord(WriteBatchInternal::Contents(updates));
+    s = log_->AddRecord(WriteBatchInternal::Contents(updates));
     if (!s.ok()) {
         return s;
     }
@@ -90,7 +122,7 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
         }
     }
 
-    s = WriteBatchInternal::InsertInto(updates, &mem_);
+    s = WriteBatchInternal::InsertInto(updates, mem_.get());
     if(s.ok()) {
         last_sequence_ += static_cast<SequenceNumber>(count);
     }
@@ -106,7 +138,7 @@ Status DBImpl::Get(const ReadOptions& options, const Slice& key, std::string* va
     }
 
     LookupKey lookup_key(key, last_sequence_);
-    if(mem_.Get(lookup_key, value)) {
+    if(mem_->Get(lookup_key, value)) {
         return Status::OK();
     }
 
@@ -144,6 +176,50 @@ Status DB::Open(const Options& options, const std::string& dbname, DB** dbptr) {
     }
 
     *dbptr = impl;
+    return Status::OK();
+}
+
+Status DBImpl::MakeRoomForWrite() {
+    if (imm_ != nullptr) {
+        return FlushMemTable();
+    }
+
+    if (mem_->ApproximateMemoryUsage() <= options_.write_buffer_size) {
+        return Status::OK();
+    }
+
+    imm_ = std::move(mem_);
+    mem_ = std::make_unique<MemTable>(internal_comparator_);
+    return FlushMemTable();
+}
+
+Status DBImpl::FlushMemTable() {
+    if (imm_ == nullptr) {
+        return Status::OK();
+    }
+
+    FileMetaData meta;
+    meta.number = versions_.NewFileNumber();
+
+    std::unique_ptr<Iterator> iter(imm_->NewIterator());
+    Status status = BuildTable(dbname_, options_.env, table_options_, iter.get(), &meta);
+    if (!status.ok()) {
+        return status;
+    }
+
+    if (meta.file_size > 0) {
+        VersionEdit edit;
+        edit.SetLogNumber(logfile_number_);
+        edit.SetLastSequence(last_sequence_);
+        edit.AddFile(0, meta.number, meta.file_size, meta.smallest, meta.largest);
+        status = versions_.LogAndApply(&edit);
+        if (!status.ok()) {
+            (void)options_.env->RemoveFile(TableFileName(dbname_, meta.number));
+            return status;
+        }
+    }
+
+    imm_.reset();
     return Status::OK();
 }
 

@@ -46,6 +46,7 @@ public:
 
     void AddFile(int level, uint64_t file_number, uint64_t file_size, 
                  const InternalKey& smallest, const InternalKey& largest);
+    void AddFile(int level, const FileMetaData& file);
     void RemoveFile(int level, uint64_t file_number);
 
     void EncodeTo(std::string* dst) const;
