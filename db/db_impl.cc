@@ -131,19 +131,26 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
 }
 
 Status DBImpl::Get(const ReadOptions& options, const Slice& key, std::string* value) {
-    (void)options;
-
     if (value == nullptr) {
         return Status::InvalidArgument("DBImpl::Get value is null");
     }
 
     LookupKey lookup_key(key, last_sequence_);
-    if(mem_->Get(lookup_key, value)) {
-        return Status::OK();
+    Status status;
+
+    if(mem_->Get(lookup_key, value, &status)) {
+        return status;
     }
 
-    value->clear();
-    return Status::NotFound("key not found", key);
+    if (imm_ != nullptr && imm_->Get(lookup_key, value, &status)) {
+        return status;
+    }
+
+    status = versions_.current()->Get(options, lookup_key, value);
+    if (!status.ok()) {
+        value->clear();
+    }
+    return status;
 }
 
 SequenceNumber DBImpl::NewSequence() {

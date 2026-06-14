@@ -2,6 +2,9 @@
 #pragma once
 
 #include <string>
+
+#include <lindb/status.h>
+
 #include "Lin-DB/db/dbformat.h"
 #include "Lin-DB/db/skiplist.h"
 #include "Lin-DB/util/arena.h"
@@ -19,6 +22,7 @@ public:
 
     // 在这里插入entry
     void Add(SequenceNumber seq, ValueType type, const Slice& key, const Slice& value);
+    bool Get(const LookupKey& key, std::string* value, Status* status);
     bool Get(const LookupKey& key, std::string* value);
 
     // 返回一个遍历 internal key -> value 的统一迭代器

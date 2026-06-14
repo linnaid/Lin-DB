@@ -143,14 +143,16 @@ void MemTable::Add(SequenceNumber seq,
         table_.Insert(buf);
     }
 
-bool MemTable::Get(const LookupKey& key, std::string* value) {
+bool MemTable::Get(const LookupKey& key, std::string* value, Status* status) {
     assert(value != nullptr);
+    assert(status != nullptr);
 
     Slice memtable_key = key.memtable_key();
     Table::Iterator iter(&table_);
     iter.Seek(memtable_key.data());
 
     if (iter.Valid() == false) {
+        *status = Status::NotFound(key.user_key());
         return false;
     }
 
@@ -159,6 +161,7 @@ bool MemTable::Get(const LookupKey& key, std::string* value) {
     Slice entry_user_key = ExtractUserKey(entry_key);
 
     if (comparator_.comparator.user_comparator()->Compare(entry_user_key, key.user_key()) != 0) {
+        *status = Status::NotFound(key.user_key());
         return false;
     }
 
@@ -167,19 +170,27 @@ bool MemTable::Get(const LookupKey& key, std::string* value) {
 
     if (type == kTypeValue) {
         const char* value_ptr = entry_key.data() + entry_key.size();
-
         Slice v = GetLengthPrefixedSlice(value_ptr);
         value->assign(v.data(), v.size());
-
+        *status = Status::OK();
         return true;
     }
 
     if (type == kTypeDeletion) {
-        return false;
+        value->clear();
+        *status = Status::NotFound(key.user_key());
+        return true;
     }
 
-    assert(false);
-    return false;
+    value->clear();
+    *status = Status::Corruption("bad value type for", key.user_key());
+    return true;
+}
+
+bool MemTable::Get(const LookupKey& key, std::string* value) {
+    Status status;
+    const bool found = Get(key, value, &status);
+    return found && status.ok();
 }
 
 Iterator* MemTable::NewIterator() const {
