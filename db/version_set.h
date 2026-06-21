@@ -20,6 +20,7 @@ namespace log {
 }
 
 class TableCache;
+class Iterator;
 class WritableFile;
 
 // 某一时刻的 SSTable 元数据快照
@@ -43,6 +44,8 @@ public:
     void SortFiles();
     Status Get(const ReadOptions& options, const LookupKey& key, std::string* value) const;
     Status Get(const ReadOptions& options, const LookupKey& key, std::string* value, GetStats* stats) const;
+    // 把当前 version 的所有 SSTable iterator 加入 iters
+    void AddIterators(const ReadOptions& options, std::vector<Iterator*>* iters) const;
     // 判断user_key 是否落在文件 smallest/largest 范围内
     bool FileMayContainUserkey(const FileMetaData* file, const Slice& user_key) const;
     // 检测读放大并标记 seek

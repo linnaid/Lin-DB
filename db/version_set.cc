@@ -139,18 +139,6 @@ void Version::SortFiles() {
     }
 }
 
-bool Version::FileMayContainUserkey(const FileMetaData* file, const Slice& user_key) const {
-    assert(file != nullptr);
-    const Comparator* user_comparator = comparator_->user_comparator();
-    if (user_comparator->Compare(user_key, file->smallest.user_key()) < 0) {
-        return false;
-    }
-    if (user_comparator->Compare(user_key, file->largest.user_key()) > 0) {
-        return false;
-    }
-    return true;
-}
-
 FileMetaData* Version::FindFileInLevel(int level, const Slice& user_key) const {
     assert(level > 0 && level < kNumLevels);
     const Comparator* user_comparator = comparator_->user_comparator();
@@ -257,6 +245,30 @@ Status Version::Get(const ReadOptions& options, const LookupKey& key, std::strin
     }
     
     return Status::NotFound(key.user_key());
+}
+
+void Version::AddIterators(const ReadOptions& options, std::vector<Iterator*>* iters) const {
+    assert(iters != nullptr);
+    if (table_cache_ == nullptr) {
+        return;
+    }
+    for (int level = 0; level < kNumLevels; ++level) {
+        for (FileMetaData* file : files_[level]) {
+            iters->push_back(table_cache_->NewIterator(options, file->number, file->file_size));
+        }
+    }
+}
+
+bool Version::FileMayContainUserkey(const FileMetaData* file, const Slice& user_key) const {
+    assert(file != nullptr);
+    const Comparator* user_comparator = comparator_->user_comparator();
+    if (user_comparator->Compare(user_key, file->smallest.user_key()) < 0) {
+        return false;
+    }
+    if (user_comparator->Compare(user_key, file->largest.user_key()) > 0) {
+        return false;
+    }
+    return true;
 }
 
 bool Version::UpdateStats(const GetStats& stats) {

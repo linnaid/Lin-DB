@@ -20,6 +20,8 @@ add_library(lindb_core
     util/bloom.cc 
     util/cache.cc 
     db/db_impl.cc
+    db/db_iter.cc 
+    db/merger.cc 
     db/write_batch.cc
     db/dbformat.cc
     db/memtable.cc

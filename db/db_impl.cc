@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <utility>
+#include <vector>
 
 #include <lindb/write_batch.h>
 #include <lindb/env.h>
@@ -9,12 +10,21 @@
 #include <lindb/iterator.h>
 
 #include "Lin-DB/db/write_batch_internal.h"
+#include "Lin-DB/db/db_iter.h"
+#include "Lin-DB/db/merger.h"
 #include "Lin-DB/db/table_cache.h"
 #include "Lin-DB/db/version_set.h"
 #include "Lin-DB/db/builder.h"
 #include "Lin-DB/db/version_edit.h"
 
 namespace lindb {
+SnapshotImpl::SnapshotImpl(SequenceNumber sequence)
+    : sequence_(sequence) {}
+
+SequenceNumber SnapshotImpl::sequence() const {
+    return sequence_;
+}
+
 namespace {
 Options MakeTableOptions(const Options& options, const InternalKeyComparator* internal_comparator) {
     Options table_options = options;
@@ -135,7 +145,7 @@ Status DBImpl::Get(const ReadOptions& options, const Slice& key, std::string* va
         return Status::InvalidArgument("DBImpl::Get value is null");
     }
 
-    LookupKey lookup_key(key, last_sequence_);
+    LookupKey lookup_key(key, GetSnapshotSequence(options));
     Status status;
 
     if(mem_->Get(lookup_key, value, &status)) {
@@ -151,6 +161,34 @@ Status DBImpl::Get(const ReadOptions& options, const Slice& key, std::string* va
         value->clear();
     }
     return status;
+}
+
+Iterator* DBImpl::NewIterator(const ReadOptions& options) {
+    SequenceNumber sequence = GetSnapshotSequence(options);
+    std::vector<Iterator*> children;
+    children.push_back(mem_->NewIterator());
+    if (imm_ != nullptr) {
+        children.push_back(imm_->NewIterator());
+    }
+    versions_.current()->AddIterators(options, &children);
+    Iterator* internal_iter = NewMergingIterator(&internal_comparator_, std::move(children));
+    return NewDBIterator(options_.comparator, internal_iter, sequence);
+}
+
+const Snapshot* DBImpl::GetSnapshot() {
+    return new SnapshotImpl(last_sequence_);
+}
+
+void DBImpl::ReleaseSnapshot(const Snapshot* snapshot) {
+    delete snapshot;
+}
+
+SequenceNumber DBImpl::GetSnapshotSequence(const ReadOptions& options) const {
+    if (options.snapshot == nullptr) {
+        return last_sequence_;
+    }
+    const SnapshotImpl* snapshot = static_cast<const SnapshotImpl*>(options.snapshot);
+    return snapshot->sequence();
 }
 
 SequenceNumber DBImpl::NewSequence() {
