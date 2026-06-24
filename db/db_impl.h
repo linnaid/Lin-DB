@@ -51,6 +51,10 @@ private:
     SequenceNumber NewSequence();
     Status InitWAL();
 
+    // 读取一个WAL 文件，把其中的WriteBatch 回放进 MemTable，并推进 last_sequence 
+    Status RecoverLogFile(uint64_t log_number);
+    // 保守删除不再需要的旧DB文件
+    Status RemoveObsoleteFiles();
     // 写入前检查 mutable MemTable 是否超过 write_buffer_size，超过就触发同步 flush
     Status MakeRoomForWrite();
     Status FlushMemTable();
