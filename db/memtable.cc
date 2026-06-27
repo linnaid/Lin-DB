@@ -201,4 +201,10 @@ size_t MemTable::ApproximateMemoryUsage() const {
     return arena_.MemoryUsage();
 }
 
+bool MemTable::Empty() const {
+    Table::Iterator iter(&table_);
+    iter.SeekToFirst();
+    return !iter.Valid();
+}
+
 }

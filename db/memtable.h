@@ -31,6 +31,9 @@ public:
     // 返回当前 Arena 近似占用的内存
     size_t ApproximateMemoryUsage() const;
 
+    // 判断当前 MemTable 是否没有任何真实写入 entry，供 recovery 判断是否需要 final flush
+    bool Empty() const;
+
 private:
     struct KeyComparator {
         // 保存 internal key comparator 

@@ -207,7 +207,7 @@ SequenceNumber DBImpl::NewSequence() {
     return last_sequence_;
 }
 
-// 打开 DB 时恢复 MANIFEST、重放 WAL，并创建新的当前 WAL
+// 打开 DB 时恢复 MANIFEST、重放 WAL，并创建新的当前 WAL，并收口 recovery 后的 log_number 元数据语义
 Status DBImpl::Open() {
     if (!options_.env->FileExists(dbname_)) {
         Status status = options_.env->CreateDir(dbname_);
@@ -261,6 +261,17 @@ Status DBImpl::Open() {
         }
     }
 
+    if (!log_numbers.empty() && !mem_->Empty()) {
+        imm_ = std::move(mem_);
+        mem_ = std::make_unique<MemTable>(internal_comparator_);
+        status = FlushMemTable();
+        if (!status.ok()) {
+            return status;
+        }
+    }
+
+    const bool replayed_logs = !log_numbers.empty();
+
     if (has_current || !log_numbers.empty()) {
         logfile_number_ = versions_.NewFileNumber();
     } else {
@@ -270,6 +281,16 @@ Status DBImpl::Open() {
     status = InitWAL();
     if (!status.ok()) {
         return status;
+    }
+
+    if (replayed_logs) {
+        VersionEdit edit;
+        edit.SetLogNumber(logfile_number_);
+        edit.SetLastSequence(last_sequence_);
+        status = versions_.LogAndApply(&edit);
+        if (!status.ok()) {
+            return status;
+        }
     }
 
     return RemoveObsoleteFiles();
