@@ -23,6 +23,33 @@ class TableCache;
 class Iterator;
 class WritableFile;
 
+// Compaction Picker(压缩选择器):选择哪些文件将会被合并
+// 描述一次待执行 compaction 的元数据计划，当前只负责保存 picker 选出的输入文件
+class Compaction {
+public:
+    explicit Compaction(int level);
+
+    // 起始层级
+    int level() const;
+    // 返回inputs[1/0] 的文件数
+    int num_input_files(int which) const;
+    const FileMetaData* input(int which, int index) const;
+    int num_grandparents() const;
+    const FileMetaData* grandparent(int index) const;
+
+private:
+    friend class VersionSet;
+
+    int level_;
+    std::vector<FileMetaData*> inputs_[2];
+    std::vector<FileMetaData*> grandparents_;
+};
+
+
+// 修改点3
+// Version 中没有prev_ & next_，无法构成循环双向链表
+// VersionSet 中没有哨兵节点 dummy_versions_用来维护循环双向链表
+
 // 某一时刻的 SSTable 元数据快照
 class Version {
 public:
@@ -42,18 +69,30 @@ public:
     void AddFile(int level, const FileMetaData& file);
     void RemoveFile(int level, uint64_t file_number);
     void SortFiles();
+
+    // 找出该层中与[begin, end] 的 user key 有范围重叠的文件
+    void GetOverlappingInputs(int level, const InternalKey* begin, 
+                              const InternalKey* end, std::vector<FileMetaData*>* inputs) const;
+
     Status Get(const ReadOptions& options, const LookupKey& key, std::string* value) const;
     Status Get(const ReadOptions& options, const LookupKey& key, std::string* value, GetStats* stats) const;
     // 把当前 version 的所有 SSTable iterator 加入 iters
     void AddIterators(const ReadOptions& options, std::vector<Iterator*>* iters) const;
     // 判断user_key 是否落在文件 smallest/largest 范围内
     bool FileMayContainUserkey(const FileMetaData* file, const Slice& user_key) const;
+
     // 检测读放大并标记 seek
     bool UpdateStats(const GetStats& stats);
     FileMetaData* FileToCompact() const;
     int FileToCompactLevel() const;
+    // 返回最高 compaction score
+    double CompactionScore() const;
+    // 最高 score 所在 level
+    int CompactionLevel() const;
 
 private:
+    friend class VersionSet;
+
     FileMetaData* FindFileInLevel(int level, const Slice& user_key) const;
 
     const InternalKeyComparator* comparator_;
@@ -63,6 +102,10 @@ private:
     // 保存 seek 触发的 compaction 候选文件
     FileMetaData* file_to_compact_ = nullptr;
     int file_to_compact_level_ = -1;
+    // 当前 Version 最需要 compact 的层级分数
+    double compaction_score_ = 0.0;
+    // 保存当前 Version 最需要的 compact 的层级编号
+    int compaction_level_ = -1;
 };
 
 // 管理当前 Version，文件号/log/sequence 等版本级元数据
@@ -89,9 +132,26 @@ public:
     SequenceNumber LastSequence() const;
     uint64_t LogNumber() const;
 
+    // 指定level 当前所有 SSTable 总大小(用于计算score)
+    int64_t NumLevelBytes(int level) const;
+    // 判断当前 Version是否需要压缩
+    bool NeedsCompaction() const;
+    Compaction* PickCompaction();
+
 private:
     Status CheckComparatorName(const VersionEdit& edit) const;
     void ApplyMetadata(const VersionEdit& edit);
+
+    // 计算 score & level
+    void Finalize(Version* version);
+    void GetRange(const std::vector<FileMetaData*>& inputs, InternalKey* smallest, InternalKey* largest) const;
+    // 两组文件合并后的最大最小 key
+    void GetRange2(const std::vector<FileMetaData*>& inputs1, 
+                   const std::vector<FileMetaData*>& inputs2, 
+                   InternalKey* smallest, InternalKey* largest) const;
+    // 根据 inputs_[0]填充inputs[1]&grandparents_;
+    void SetupOtherInputs(Compaction* compaction);
+
 
     // 把当前完整 Version 写成 MANIFEST snapshot
     Status WriteSnapshot(log::Writer* writer) const;

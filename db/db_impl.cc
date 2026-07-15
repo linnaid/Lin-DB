@@ -427,6 +427,9 @@ Status DBImpl::RemoveObsoleteFiles() {
             const std::string path = dbname_ + "/" + filename;
             if (options_.env->FileExists(path)) {
                 status = options_.env->RemoveFile(path);
+                if (!status.ok()) {
+                    return status;
+                }
             }
         }
     }

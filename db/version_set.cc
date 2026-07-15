@@ -52,6 +52,61 @@ bool NewestFileFirst(const FileMetaData* left, const FileMetaData* right) {
     return left->number > right->number;
 }
 
+constexpr int kL0CompactionTrigger = 4;
+
+int64_t TotalFileSize(const std::vector<FileMetaData*>& files) {
+    int64_t total = 0;
+    for (const FileMetaData* file : files) {
+        total += static_cast<int64_t>(file->file_size);
+    }
+    return total;
+}
+
+// 某层触发压缩的字节阈值
+double MaxBytesForLevel(const Options* options, int level) {
+    (void)options; // 暂时不用options，保留用于后续接入 LevelDB 策略
+    double result = 10.0 * 1048576.0;
+    while (level > 1) {
+        result *= 10.0;
+        -- level;
+    }
+    return result;
+}
+
+}
+
+Compaction::Compaction(int level) 
+    : level_(level) {
+        assert(level_ >= 0);
+        assert(level_ + 1 < kNumLevels);
+}
+
+int Compaction::level() const {
+    return level_;
+}
+
+int Compaction::num_input_files(int which) const {
+    assert(which >= 0 && which < 2);
+    return static_cast<int>(inputs_[which].size());
+}
+
+const FileMetaData* Compaction::input(int which, int index) const {
+    assert(which >= 0 && which < 2);
+    assert(index >= 0);
+    assert(static_cast<size_t>(index) < inputs_[which].size());
+
+    return inputs_[which][index];
+}
+
+int Compaction::num_grandparents() const {
+    return static_cast<int>(grandparents_.size());
+}
+
+const FileMetaData* Compaction::grandparent(int index) const {
+    assert(index >= 0);
+    assert(static_cast<size_t>(index) < grandparents_.size());
+
+    return grandparents_[index];
 }
 
 Version::Version(const InternalKeyComparator* comparator, TableCache* table_cache)
@@ -61,7 +116,9 @@ Version::Version(const InternalKeyComparator* comparator, TableCache* table_cach
 }
 Version::Version(const Version& other)
     : comparator_(other.comparator_), 
-      table_cache_(other.table_cache_) {
+      table_cache_(other.table_cache_), 
+      compaction_level_(other.compaction_level_), 
+      compaction_score_(other.compaction_score_) {
     assert(comparator_ != nullptr);
     for (int level_index = 0; level_index < kNumLevels; ++level_index) {
         for (const FileMetaData* file : other.files_[level_index]) {
@@ -69,6 +126,8 @@ Version::Version(const Version& other)
         }
     }
 }
+// 修改点1
+// 需要修改file同步部分，和LevelDB同步
 Version& Version::operator=(const Version& other) {
     if (this == &other) {
         return *this;
@@ -83,6 +142,8 @@ Version& Version::operator=(const Version& other) {
     table_cache_ = other.table_cache_;
     file_to_compact_ = nullptr;
     file_to_compact_level_ = -1;
+    compaction_level_ = other.compaction_level_;
+    compaction_score_ = other.compaction_score_;
     assert(comparator_ != nullptr);
     for (int level_index = 0; level_index < kNumLevels; ++level_index) {
         for (const FileMetaData* file : other.files_[level_index]) {
@@ -136,6 +197,53 @@ void Version::SortFiles() {
                   [this](const FileMetaData* left, const FileMetaData* right) {
                     return comparator_->Compare(left->smallest, right->smallest) < 0;
                   });
+    }
+}
+
+void Version::GetOverlappingInputs(int level, const InternalKey* begin, 
+                                   const InternalKey* end, std::vector<FileMetaData*>* inputs) const {
+    assert(level >= 0 && level < kNumLevels);
+    assert(inputs != nullptr);
+    inputs->clear();
+
+    Slice user_begin;
+    Slice user_end;
+    bool has_begin = false;
+    bool has_end = false;
+    if (begin != nullptr) {
+        user_begin = begin->user_key();
+        has_begin = true;
+    }
+    if (end != nullptr) {
+        user_end = end->user_key();
+        has_end = true;
+    }
+
+    const Comparator* user_comparator = comparator_->user_comparator();
+    for (size_t index = 0; index < files_[level].size(); ) {
+        FileMetaData* file = files_[level][index++];
+        const Slice file_start = file->smallest.user_key();
+        const Slice file_limit = file->largest.user_key();
+        if (has_begin && user_comparator->Compare(file_limit, user_begin) < 0) {
+            continue;
+        }
+        if (has_end && user_comparator->Compare(file_start, user_end) > 0) {
+            continue;
+        }
+
+        inputs->push_back(file);
+        // 一次循环只允许扩展一次边界
+        if (level == 0) {
+            if (has_begin && user_comparator->Compare(file_start, user_begin) < 0) {
+                user_begin = file_start;
+                inputs->clear();
+                index = 0;
+            } else if (has_end && user_comparator->Compare(file_limit, user_end) > 0) {
+                user_end = file_limit;
+                inputs->clear();
+                index = 0;
+            }
+        }
     }
 }
 
@@ -292,6 +400,17 @@ int Version::FileToCompactLevel() const {
     return file_to_compact_level_;
 }
 
+int Version::CompactionLevel() const {
+    return compaction_level_;
+}
+
+double Version::CompactionScore() const {
+    return compaction_score_;
+}
+
+// 修改点2
+// LevelDB 使用的是双向链表，当current变化时，旧 Version 无法保存
+// 在这里调用Finalize 没有意义，current_ 初始时是空，Recover()后才有数据
 VersionSet::VersionSet(const std::string& dbname, const Options* options, TableCache* table_cache, 
                        const InternalKeyComparator* comparator)
     : env_(options->env), 
@@ -308,6 +427,7 @@ VersionSet::VersionSet(const std::string& dbname, const Options* options, TableC
       current_(new Version(comparator, table_cache)) {
     assert(options_ != nullptr);
     assert(comparator_ != nullptr);
+    Finalize(current_);
 }  
 
 VersionSet::~VersionSet() {
@@ -409,6 +529,7 @@ Status VersionSet::Recover() {
 
     delete current_;
     current_ = new Version(comparator_, table_cache_);
+    Finalize(current_);
     next_file_number_ = 2;
     log_number_ = 0;
     last_sequence_ = 0;
@@ -464,6 +585,7 @@ Status VersionSet::ApplyVersionEdit(VersionEdit* edit) {
         next->AddFile(new_file.first, new_file.second);
     }
     next->SortFiles();
+    Finalize(next);
     ApplyMetadata(*edit);
     for (const auto& new_file : edit->new_files()) {
         MarkFileNumberUsed(new_file.second.number);
@@ -495,6 +617,61 @@ uint64_t VersionSet::LogNumber() const {
     return log_number_;
 }
 
+int64_t VersionSet::NumLevelBytes(int level) const {
+    assert(level >= 0 && level < kNumLevels);
+    return TotalFileSize(current_->files_[level]);
+}
+
+bool VersionSet::NeedsCompaction() const {
+    return current_->compaction_score_ >= 1.0 || current_->file_to_compact_ != nullptr;
+}
+
+Compaction* VersionSet::PickCompaction() {
+    const bool size_compaction = current_->compaction_score_ >= 1.0;
+    const bool seek_compaction = current_->file_to_compact_ != nullptr;
+    int level = -1;
+    Compaction* compaction = nullptr;
+
+    // 修改点4
+    // 这里当进入 size compaction 时，应该先遍历该层各个文件，若未找到再赋值为files_[level][0]
+    // 不过现在是 10.1，预计后期会补上
+    if (size_compaction) {
+        level = current_->compaction_level_;
+        // assert(level >= 0);
+        // assert(level + 1 < kNumLevels);
+        if (level < 0 || level + 1 >= kNumLevels || current_->files_[level].empty()) {
+            return nullptr;
+        }
+        compaction = new Compaction(level);
+
+        compaction->inputs_[0].push_back(current_->files_[level][0]);
+    } else if (seek_compaction) {
+        level = current_->file_to_compact_level_;
+        if (level < 0 || level + 1 >= kNumLevels) {
+            return nullptr;
+        }
+        compaction = new Compaction(level);
+
+        compaction->inputs_[0].push_back(current_->file_to_compact_);
+    } else {
+        return nullptr;
+    }
+
+    if (level == 0) {
+        InternalKey smallest;
+        InternalKey largest;
+        GetRange(compaction->inputs_[0], &smallest, &largest);
+        current_->GetOverlappingInputs(0, &smallest, &largest, &compaction->inputs_[0]);
+        if (compaction->inputs_[0].empty()) {
+            delete compaction;
+            return nullptr;
+        }
+    }
+
+    SetupOtherInputs(compaction);
+    return compaction;
+}
+
 Status VersionSet::CheckComparatorName(const VersionEdit& edit) const {
     if (!edit.has_comparator()) {
         return Status::OK();
@@ -514,6 +691,72 @@ void VersionSet::ApplyMetadata(const VersionEdit& edit) {
     }
     if (edit.has_last_sequence() && last_sequence_ < edit.last_sequence()) {
         last_sequence_ = edit.last_sequence();
+    }
+}
+
+void VersionSet::Finalize(Version* version) {
+    assert(version != nullptr);
+    int best_level = -1;
+    double best_score = -1.0;
+    for (int level = 0; level < kNumLevels; ++level) {
+        double score = 0.0;
+        if (level == 0) {
+            score = version->files_[level].size() / static_cast<double>(kL0CompactionTrigger);
+        } else {
+            score = static_cast<double>(TotalFileSize(version->files_[level])) / MaxBytesForLevel(options_, level);
+        }
+        if (score > best_score) {
+            best_level = level;
+            best_score = score;
+        }
+    }
+    version->compaction_level_ = best_level;
+    version->compaction_score_ = best_score;
+}
+
+void VersionSet::GetRange(const std::vector<FileMetaData*>& inputs, InternalKey* smallest, InternalKey* largest) const {
+    assert(!inputs.empty());
+    // assert(smallest != nullptr);
+    // assert(largest != nullptr);
+    *smallest = inputs[0]->smallest;
+    *largest = inputs[0]->largest;
+    for (size_t index = 1; index < inputs.size(); ++index) {
+        FileMetaData* file = inputs[index];
+        if (comparator_->Compare(file->smallest, *smallest) < 0) {
+            *smallest = file->smallest;
+        }
+        if (comparator_->Compare(file->largest, *largest) > 0) {
+            *largest = file->largest;
+        }
+    }
+}
+
+void VersionSet::GetRange2(const std::vector<FileMetaData*>& inputs1, 
+                           const std::vector<FileMetaData*>& inputs2, 
+                           InternalKey* smallest, InternalKey* largest) const {
+    std::vector<FileMetaData*> all = inputs1;
+    all.insert(all.end(), inputs2.begin(), inputs2.end());
+    GetRange(all, smallest, largest);
+}
+
+// 修改点5
+// 目前10.1,后续或许会补上部分相应功能，缺失部分：
+// 1. AddBoundaryInputs()，目的把拥有相同最大UserKey 的文件一起加入
+// 2. Expand Inputs，扩大输入，减少写放大
+// 3. 更新compact_pointer_，也就是一个轮转选择压缩起点
+void VersionSet::SetupOtherInputs(Compaction* compaction) {
+    assert(compaction != nullptr);
+    const int level = compaction->level();
+    InternalKey smallest;
+    InternalKey largest;
+    GetRange(compaction->inputs_[0], &smallest, &largest);
+    current_->GetOverlappingInputs(level + 1, &smallest, &largest, &compaction->inputs_[1]);
+
+    InternalKey all_start;
+    InternalKey all_limit;
+    GetRange2(compaction->inputs_[0], compaction->inputs_[1], &all_start, &all_limit);
+    if (level + 2 < kNumLevels) {
+        current_->GetOverlappingInputs(level + 2, &all_start, &all_limit, &compaction->grandparents_);
     }
 }
 
