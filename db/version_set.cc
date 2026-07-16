@@ -73,6 +73,63 @@ double MaxBytesForLevel(const Options* options, int level) {
     return result;
 }
 
+// 扩大compaction 时输入允许的最大字节数
+int64_t ExpandedCompactionByteSizeLimit(const Options* options) {
+    return 25 * static_cast<int64_t>(options->max_file_size);
+}
+
+bool FindLargestKey(const InternalKeyComparator& comparator, 
+                    const std::vector<FileMetaData*>& files, 
+                    InternalKey* largest_key) {
+    if (files.empty()) {
+        return false;
+    }
+    *largest_key = files[0]->largest;
+    for (size_t index = 1; index < files.size(); ++index) {
+        FileMetaData* file = files[index];
+        if (comparator.Compare(file->largest, *largest_key) > 0) {
+            *largest_key = file->largest;
+        }
+    }
+    return true;
+}
+
+FileMetaData* FindSmallestBoundaryFile(const InternalKeyComparator& comparator, 
+                                       const std::vector<FileMetaData*>& level_files, 
+                                       const InternalKey& largest_key) {
+    const Comparator* user_comparator = comparator.user_comparator();
+    FileMetaData* smallest_boundary_file = nullptr;
+    for (FileMetaData* file : level_files) {
+        if (comparator.Compare(file->smallest, largest_key) > 0 && 
+            user_comparator->Compare(file->smallest.user_key(), largest_key.user_key()) == 0) {
+            if (smallest_boundary_file == nullptr || 
+                comparator.Compare(file->smallest, smallest_boundary_file->smallest) < 0) {
+                smallest_boundary_file = file;
+            }
+        }
+    }
+    return smallest_boundary_file;
+}
+
+// 对被选压缩文件层做范围扩展，避免连续边界文件被拆开 compaction
+// 减少闭包扩展的次数，避免因为边界问题导致 compaction的user_key范围持续扩大
+void AddBoundaryInputs(const InternalKeyComparator& comparator, 
+                       const std::vector<FileMetaData*>& level_files, 
+                       std::vector<FileMetaData*>* compaction_files) {
+    InternalKey largest_key;
+    if (!FindLargestKey(comparator, *compaction_files, &largest_key)) {
+        return;
+    }
+    while (true) {
+        FileMetaData* boundary_file = FindSmallestBoundaryFile(comparator, level_files, largest_key);
+        if (boundary_file == nullptr) {
+            break;
+        }
+        compaction_files->push_back(boundary_file);
+        largest_key = boundary_file->largest;
+    }
+}
+
 }
 
 Compaction::Compaction(int level) 
@@ -739,22 +796,60 @@ void VersionSet::GetRange2(const std::vector<FileMetaData*>& inputs1,
     GetRange(all, smallest, largest);
 }
 
+
 // 修改点5
 // 目前10.1,后续或许会补上部分相应功能，缺失部分：
-// 1. AddBoundaryInputs()，目的把拥有相同最大UserKey 的文件一起加入
 // 2. Expand Inputs，扩大输入，减少写放大
 // 3. 更新compact_pointer_，也就是一个轮转选择压缩起点
 void VersionSet::SetupOtherInputs(Compaction* compaction) {
     assert(compaction != nullptr);
     const int level = compaction->level();
+    // 本层最大最小
     InternalKey smallest;
     InternalKey largest;
-    GetRange(compaction->inputs_[0], &smallest, &largest);
-    current_->GetOverlappingInputs(level + 1, &smallest, &largest, &compaction->inputs_[1]);
 
+    AddBoundaryInputs(*comparator_, current_->files_[level], &compaction->inputs_[0]);
+    GetRange(compaction->inputs_[0], &smallest, &largest);
+
+    current_->GetOverlappingInputs(level + 1, &smallest, &largest, &compaction->inputs_[1]);
+    AddBoundaryInputs(*comparator_, current_->files_[level+1], &compaction->inputs_[1]);
+
+    // 两层合并最大最小
     InternalKey all_start;
     InternalKey all_limit;
     GetRange2(compaction->inputs_[0], compaction->inputs_[1], &all_start, &all_limit);
+
+    // 只有存在下一层的输入时，扩展本层输入才有减少写放大的意义
+    if (!compaction->inputs_[1].empty()) {
+        std::vector<FileMetaData*> expanded0;
+        current_->GetOverlappingInputs(level, &all_start, &all_limit, &expanded0);
+        AddBoundaryInputs(*comparator_, current_->files_[level], &expanded0);
+        
+        // const int64_t inputs0_size = TotalFileSize(compaction->inputs_[0]);
+        const int64_t inputs1_size = TotalFileSize(compaction->inputs_[1]);
+        const int64_t expanded0_size = TotalFileSize(expanded0);
+        // (void)inputs0_size; // 当前没有 info_log 输出，只用于未来日志，可以暂时不要
+        if (expanded0.size() > compaction->inputs_[0].size() && 
+            inputs1_size + expanded0_size < ExpandedCompactionByteSizeLimit(options_)) {
+            InternalKey new_start;
+            InternalKey new_limit;
+            GetRange(expanded0, &new_start, &new_limit);
+            
+            std::vector<FileMetaData*> expanded1;
+            current_->GetOverlappingInputs(level+1, &new_start, &new_limit, &expanded1);
+            AddBoundaryInputs(*comparator_, current_->files_[level+1], &expanded1);
+
+            if (expanded1.size() == compaction->inputs_[1].size()) {
+                smallest = new_start;
+                largest = new_limit;
+                compaction->inputs_[0] = expanded0;
+                compaction->inputs_[1] = expanded1;
+                GetRange2(compaction->inputs_[0], compaction->inputs_[1], &all_start, &all_limit);
+            }
+        }
+    }
+
+    // 如果存在 grandparent 记录它的 overlap，后续compaction输出切分会用到
     if (level + 2 < kNumLevels) {
         current_->GetOverlappingInputs(level + 2, &all_start, &all_limit, &compaction->grandparents_);
     }
