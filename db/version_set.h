@@ -172,6 +172,10 @@ private:
     WritableFile* descriptor_file_;
     std::unique_ptr<log::Writer> descriptor_log_;
     Version* current_;
+
+    // 每层下一次 size compaction 的轮转起点
+    // 保存 encoded InterKey
+    std::string compact_pointer_[kNumLevels];
 };
 
 }

@@ -12,7 +12,7 @@ enum Tag : uint32_t {
     kLogNumber = 2,
     kNextFileNumber = 3,
     kLastSequence = 4,
-    // kCompactPointer = 5,
+    kCompactPointer = 5,
     kDeletedFile = 6,
     kNewFile = 7,
     // kPrevLogNumber = 9,
@@ -60,6 +60,7 @@ void VersionEdit::Clear() {
     has_last_sequence_ = false;
     deleted_files_.clear();
     new_files_.clear();
+    compact_pointers_.clear();
 }
 
 void VersionEdit::SetComparatorName(const Slice& name) {
@@ -80,6 +81,11 @@ void VersionEdit::SetNextFile(uint64_t number) {
 void VersionEdit::SetLastSequence(SequenceNumber sequence) {
     has_last_sequence_ = true;
     last_sequence_ = sequence;
+}
+
+void VersionEdit::SetCompactPointer(int level, const InternalKey& key) {
+    assert(level >= 0 && level < kNumLevels);
+    compact_pointers_.push_back(std::make_pair(level, key));
 }
 
 void VersionEdit::AddFile(int level, uint64_t file_number, uint64_t file_size, 
@@ -120,11 +126,19 @@ void VersionEdit::EncodeTo(std::string* dst) const {
         PutVarint32(dst, kLastSequence);
         PutVarint64(dst, last_sequence_);
     }
+
+    for (const auto& compact_pointer : compact_pointers_) {
+        PutVarint32(dst, kCompactPointer);
+        PutVarint32(dst, static_cast<uint32_t>(compact_pointer.first));
+        PutLengthPrefixedSlice(dst, compact_pointer.second.Encode());
+    }
+
     for (const auto& deleted_file : deleted_files_) {
         PutVarint32(dst, kDeletedFile);
         PutVarint32(dst, static_cast<uint32_t>(deleted_file.first));
         PutVarint64(dst, deleted_file.second);
     }
+
     for (const auto& new_file : new_files_) {
         const FileMetaData& file = new_file.second;
         PutVarint32(dst, kNewFile);
@@ -180,6 +194,16 @@ Status VersionEdit::DecodeFrom(const Slice& src) {
                 return InvalidVersionEdit("bad last sequence");
             }
             SetLastSequence(sequence);
+            break;
+        }
+
+        case kCompactPointer: {
+            int level = 0;
+            InternalKey key;
+            if (!GetLevel(&input, &level) || !GetInternalKey(&input, &key)) {
+                return InvalidVersionEdit("bad compact pointer");
+            }
+            SetCompactPointer(level, key);
             break;
         }
 

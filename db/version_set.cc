@@ -587,9 +587,15 @@ Status VersionSet::Recover() {
     delete current_;
     current_ = new Version(comparator_, table_cache_);
     Finalize(current_);
+    // LevelDB会检查是否存在关键元数据(lognumber,nextfilenumber)
+    // 缺失则设为 corruption 并终止 Recover
     next_file_number_ = 2;
     log_number_ = 0;
     last_sequence_ = 0;
+
+    for (int level = 0; level < kNumLevels; ++level) {
+        compact_pointer_[level].clear();
+    }
 
     log::Reader reader(file, true);
     std::string record;
@@ -617,6 +623,15 @@ Status VersionSet::WriteSnapshot(log::Writer* writer) const {
     VersionEdit snapshot;
     snapshot.SetComparatorName(Slice(comparator_->Name()));
     snapshot.SetLastSequence(last_sequence_);
+
+    for (int level = 0; level < kNumLevels; ++level) {
+        if (!compact_pointer_[level].empty()) {
+            InternalKey key;
+            key.DecodeFrom(Slice(compact_pointer_[level]));
+            snapshot.SetCompactPointer(level, key);
+        }
+    }
+
     for (int level = 0; level < kNumLevels; ++level) {
         for (int index = 0; index < current_->NumFiles(level); ++index) {
             const FileMetaData* file = current_->File(level, index);
@@ -634,6 +649,12 @@ Status VersionSet::ApplyVersionEdit(VersionEdit* edit) {
     if (!status.ok()) {
         return status;
     }
+
+    for (const auto& compact_pointer : edit->compact_pointers()) {
+        const int level = compact_pointer.first;
+        compact_pointer_[level] = compact_pointer.second.Encode().ToString();
+    }
+
     Version* next = new Version(*current_);
     for (const auto& deleted_file : edit->deleted_files()) {
         next->RemoveFile(deleted_file.first, deleted_file.second);
@@ -701,7 +722,18 @@ Compaction* VersionSet::PickCompaction() {
         }
         compaction = new Compaction(level);
 
-        compaction->inputs_[0].push_back(current_->files_[level][0]);
+        // 利用回绕使得在找不到制定文件时可以从头开始进行压缩(wrap-around)
+        for (FileMetaData* file : current_->files_[level]) {
+            if (compact_pointer_[level].empty() || 
+                comparator_->Compare(file->largest.Encode(), Slice(compact_pointer_[level])) > 0) {
+                compaction->inputs_[0].push_back(file);
+                break;
+            } 
+        }
+        if (compaction->inputs_[0].empty()) {
+            compaction->inputs_[0].push_back(current_->files_[level][0]);
+        }
+
     } else if (seek_compaction) {
         level = current_->file_to_compact_level_;
         if (level < 0 || level + 1 >= kNumLevels) {
@@ -853,6 +885,8 @@ void VersionSet::SetupOtherInputs(Compaction* compaction) {
     if (level + 2 < kNumLevels) {
         current_->GetOverlappingInputs(level + 2, &all_start, &all_limit, &compaction->grandparents_);
     }
+
+    compact_pointer_[level] = largest.Encode().ToString();
 }
 
 }

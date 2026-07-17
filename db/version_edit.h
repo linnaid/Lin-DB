@@ -34,6 +34,7 @@ class VersionEdit {
 public:
     using DeletedFileSet = std::set<std::pair<int, uint64_t>>;
     using NewFileSet = std::vector<std::pair<int, FileMetaData>>;
+    using CompactPointerSet = std::vector<std::pair<int, InternalKey>>;
 
     VersionEdit();
 
@@ -43,6 +44,7 @@ public:
     void SetLogNumber(uint64_t number);
     void SetNextFile(uint64_t number);
     void SetLastSequence(SequenceNumber sequence);
+    void SetCompactPointer(int level, const InternalKey& key);
 
     void AddFile(int level, uint64_t file_number, uint64_t file_size, 
                  const InternalKey& smallest, const InternalKey& largest);
@@ -64,6 +66,7 @@ public:
 
     const DeletedFileSet& deleted_files() const { return deleted_files_; }
     const NewFileSet& new_files() const { return new_files_; }
+    const CompactPointerSet&  compact_pointers() const { return compact_pointers_; }
 
 private:
     friend class VersionSet;
@@ -78,6 +81,7 @@ private:
     bool has_last_sequence_ = false;
     DeletedFileSet deleted_files_;
     NewFileSet new_files_;
+    CompactPointerSet compact_pointers_;
 };
 
 }
