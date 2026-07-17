@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <set>
 
 #include <lindb/options.h>
 #include <lindb/status.h>
@@ -53,11 +54,14 @@ private:
 // 某一时刻的 SSTable 元数据快照
 class Version {
 public:
-    explicit Version(const InternalKeyComparator* comparator, TableCache* table_cache = nullptr);
+    explicit Version(VersionSet* vset, const InternalKeyComparator* comparator, TableCache* table_cache = nullptr);
     Version(const Version& other);
     Version& operator=(const Version& other);
 
     ~Version();
+
+    void Ref();
+    void Unref();
 
     struct GetStats {
         FileMetaData* seek_file = nullptr;
@@ -66,7 +70,7 @@ public:
 
     int NumFiles(int level) const;
     const FileMetaData* File(int level, size_t index) const;
-    void AddFile(int level, const FileMetaData& file);
+    void AddFile(int level, FileMetaData* file);
     void RemoveFile(int level, uint64_t file_number);
     void SortFiles();
 
@@ -92,12 +96,19 @@ public:
 
 private:
     friend class VersionSet;
+    // friend class VersionSet::Builder;
 
     FileMetaData* FindFileInLevel(int level, const Slice& user_key) const;
 
+    // 所属 VersionSet，用于 Unref 时访问 dummy_versions_
+    VersionSet* vset_;
     const InternalKeyComparator* comparator_;
     std::vector<FileMetaData*> files_[kNumLevels];
     TableCache* table_cache_;
+
+    int refs_ = 0;
+    Version* prev_ = nullptr;
+    Version* next_ = nullptr;
 
     // 保存 seek 触发的 compaction 候选文件
     FileMetaData* file_to_compact_ = nullptr;
@@ -138,7 +149,13 @@ public:
     bool NeedsCompaction() const;
     Compaction* PickCompaction();
 
+    // 收集所有 live versions 引用的 table file number
+    void AddLiveFiles(std::set<uint64_t>* live) const;
+
 private:
+    // 版本管理中的构建器
+    class Builder;
+
     Status CheckComparatorName(const VersionEdit& edit) const;
     void ApplyMetadata(const VersionEdit& edit);
 
@@ -152,6 +169,8 @@ private:
     // 根据 inputs_[0]填充inputs[1]&grandparents_;
     void SetupOtherInputs(Compaction* compaction);
 
+    // 把新的 Version 加入 live 链表并切换 current_
+    void AppendVersion(Version* version);
 
     // 把当前完整 Version 写成 MANIFEST snapshot
     Status WriteSnapshot(log::Writer* writer) const;
@@ -171,6 +190,7 @@ private:
     // 当前打开 MANIFEST 文件句柄
     WritableFile* descriptor_file_;
     std::unique_ptr<log::Writer> descriptor_log_;
+    Version* dummy_versions_;
     Version* current_;
 
     // 每层下一次 size compaction 的轮转起点

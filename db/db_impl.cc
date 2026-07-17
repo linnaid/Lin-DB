@@ -50,6 +50,13 @@ bool IsDotOrDotDot(const std::string& filename) {
     return filename == "." || filename == "..";
 }
 
+// Iterator cleanup 回调，用来释放 Version 引用
+void UnrefVersion(void* arg1, void* arg2) {
+    (void)arg2;
+    Version* version = reinterpret_cast<Version*>(arg1);
+    version->Unref();
+}
+
 }
 
 
@@ -180,8 +187,10 @@ Iterator* DBImpl::NewIterator(const ReadOptions& options) {
     if (imm_ != nullptr) {
         children.push_back(imm_->NewIterator());
     }
-    versions_.current()->AddIterators(options, &children);
-    Iterator* internal_iter = NewMergingIterator(&internal_comparator_, std::move(children));
+    Version* current = versions_.current();
+    current->Ref();
+    current->AddIterators(options, &children);
+    Iterator* internal_iter = NewMergingIterator(&internal_comparator_, std::move(children)); // // //
     return NewDBIterator(options_.comparator, internal_iter, sequence);
 }
 
@@ -366,12 +375,7 @@ Status DBImpl::RemoveObsoleteFiles() {
 
     // 保存当前 Version 仍然引用的 SSTable 文件号
     std::set<uint64_t> live_tables;
-    for (int level = 0; level < kNumLevels; ++level) {
-        for (int index = 0; index < versions_.current()->NumFiles(level); ++index) {
-            const FileMetaData* file = versions_.current()->File(level, index);
-            live_tables.insert(file->number);
-        }
-    }
+    versions_.AddLiveFiles(&live_tables);
 
     // 保存CURRENT 当前指向的 MANIFEST 文件号，0表示没有 MANIFEST
     uint64_t current_manifest_number = 0;

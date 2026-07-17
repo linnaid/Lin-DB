@@ -130,6 +130,16 @@ void AddBoundaryInputs(const InternalKeyComparator& comparator,
     }
 }
 
+// 减少引用计数，归零释放
+void UnrefFile(FileMetaData* file) {
+    assert(file != nullptr);
+    assert(file->refs > 0);
+    --file->refs;
+    if (file->refs <= 0) {
+        delete file;
+    }
+}
+
 }
 
 Compaction::Compaction(int level) 
@@ -166,9 +176,11 @@ const FileMetaData* Compaction::grandparent(int index) const {
     return grandparents_[index];
 }
 
-Version::Version(const InternalKeyComparator* comparator, TableCache* table_cache)
-    : comparator_(comparator), 
+Version::Version(VersionSet* vset, const InternalKeyComparator* comparator, TableCache* table_cache)
+    : vset_(vset), 
+      comparator_(comparator), 
       table_cache_(table_cache) {
+    assert(vset_ != nullptr);
     assert(comparator_ != nullptr);
 }
 Version::Version(const Version& other)
@@ -211,10 +223,30 @@ Version& Version::operator=(const Version& other) {
 }
 
 Version::~Version() {
+    assert(refs_ == 0);
     for (int level_index = 0; level_index < kNumLevels; ++level_index) {
         for (FileMetaData* file : files_[level_index]) {
-            delete file;
+            UnrefFile(file);
         }
+        files_[level_index].clear();
+    }
+}
+
+void Version::Ref() {
+    ++refs_;
+}
+
+void Version::Unref() {
+    assert(refs_ > 0);
+    --refs_;
+    if (refs_ == 0) {
+        assert(prev_ != nullptr);
+        assert(next_ != nullptr);
+        prev_->next_ = next_;
+        next_->prev_ = prev_;
+        prev_ = nullptr;
+        next_ = nullptr;
+        delete this;
     }
 }
 
@@ -229,10 +261,12 @@ const FileMetaData* Version::File(int level, size_t index) const {
     return files_[level][index];
 }
 
-void Version::AddFile(int level, const FileMetaData& file) {
+void Version::AddFile(int level, FileMetaData* file) {
     assert(level >= 0 && level < kNumLevels);
-    RemoveFile(level, file.number);
-    files_[level].push_back(new FileMetaData(file));
+    assert(file != nullptr);
+    RemoveFile(level, file->number);
+    ++file->refs;
+    files_[level].push_back(file);
 }
 
 void Version::RemoveFile(int level, uint64_t file_number) {
@@ -240,8 +274,9 @@ void Version::RemoveFile(int level, uint64_t file_number) {
     std::vector<FileMetaData*>& files = files_[level];
     for (auto iter = files.begin(); iter != files.end(); ) {
         if ((*iter)->number == file_number) {
-            delete *iter;
+            FileMetaData* file = *iter;
             iter = files.erase(iter);
+            UnrefFile(file);
         } else {
             ++iter;
         }
@@ -465,6 +500,98 @@ double Version::CompactionScore() const {
     return compaction_score_;
 }
 
+// 读取当前 Version 作为基础，将 VersionEdit 中记录的新增和删除SST文件合并
+// 生成新 Version ，交给 VersionSet 安装为 current Version
+class VersionSet::Builder {
+public:
+    Builder(VersionSet* versions, Version* base)
+        : versions_(versions),
+          base_(base) {
+        assert(versions_ != nullptr);
+        assert(base_ != nullptr);
+        base_->Ref();
+    }
+
+    ~Builder() {
+        for (int level = 0; level < kNumLevels; ++level) {
+            for (FileMetaData* file : added_files_[level]) {
+                UnrefFile(file);
+            }
+        }
+        base_->Unref();
+    }
+
+    // 把 VersionEdit 合并进 Builder 临时状态
+    void Apply(const VersionEdit* edit) {
+        assert(edit != nullptr);
+        for (const auto& compact_pointer : edit->compact_pointers()) {
+            const int level = compact_pointer.first;
+            versions_->compact_pointer_[level] = compact_pointer.second.Encode().ToString();
+        }
+
+        for (const auto& deleted_file : edit->deleted_files()) {
+            deleted_files_.insert(deleted_file);
+        }
+
+        for (const auto& new_file : edit->new_files()) {
+            const int level = new_file.first;
+            deleted_files_.erase(std::make_pair(level, new_file.second.number));
+            FileMetaData* file = new FileMetaData(new_file.second);
+            file->refs = 1;
+            file->allowed_seeks = static_cast<int>(file->file_size / 16384);
+            if (file->allowed_seeks < 100) {
+                file->allowed_seeks = 100;
+            }
+            added_files_[level].push_back(file);
+        }
+    }
+
+    // 把 base + edit 合并结果写入新的 Version
+    void SaveTo(Version* version) {
+        assert(version != nullptr);
+        for (int level = 0; level < kNumLevels; ++level) {
+            std::vector<FileMetaData*>& added = added_files_[level];
+            std::sort(added.begin(), added.end(), [this](const FileMetaData* left, const FileMetaData* right) {
+                return versions_->comparator_->Compare(left->smallest, right->smallest) < 0;
+            });
+
+            const std::vector<FileMetaData*>& base_files = base_->files_[level];
+            size_t base_index = 0;
+            size_t added_index = 0;
+            while (base_index < base_files.size() || added_index < added.size()) {
+                if (added_index >= added.size()) {
+                    MaybeAddFile(version, level, base_files[base_index++]);
+                } else if (base_index >= base_files.size()) {
+                    MaybeAddFile(version, level, added[added_index++]);
+                } else if (versions_->comparator_->Compare(base_files[base_index]->smallest, added[added_index]->smallest) < 0) {
+                    MaybeAddFile(version, level, base_files[base_index++]);
+                } else {
+                    MaybeAddFile(version, level, added[added_index++]);
+                }
+            }
+        }
+    }
+
+private:
+    bool IsDeleted(int level, uint64_t file_number) const {
+        return deleted_files_.count(std::make_pair(level, file_number)) != 0;
+    }
+
+    void MaybeAddFile(Version* version, int level, FileMetaData* file) {
+        assert(version != nullptr);
+        assert(file != nullptr);
+        if (IsDeleted(level, file->number)) {
+            return;
+        }
+        version->AddFile(level, file);
+    }
+
+    VersionSet* versions_;
+    Version* base_;
+    VersionEdit::DeletedFileSet deleted_files_;
+    std::vector<FileMetaData*> added_files_[kNumLevels];
+};
+
 // 修改点2
 // LevelDB 使用的是双向链表，当current变化时，旧 Version 无法保存
 // 在这里调用Finalize 没有意义，current_ 初始时是空，Recover()后才有数据
@@ -480,15 +607,28 @@ VersionSet::VersionSet(const std::string& dbname, const Options* options, TableC
       last_sequence_(0), 
       manifest_file_number_(0), 
       descriptor_file_(nullptr), 
-      descriptor_log_(nullptr), 
-      current_(new Version(comparator, table_cache)) {
+      descriptor_log_(nullptr),
+      dummy_versions_(new Version(this, comparator, table_cache)),  
+      current_(nullptr) {
     assert(options_ != nullptr);
     assert(comparator_ != nullptr);
+    dummy_versions_->prev_ = dummy_versions_;
+    dummy_versions_->next_ = dummy_versions_;
+    // 安装空的 Version 作为 current
+    AppendVersion(new Version(this, comparator_, table_cache_));
     Finalize(current_);
 }  
 
 VersionSet::~VersionSet() {
-    delete current_;
+    if (current_ != nullptr) {
+        current_->Unref();
+        current_ = nullptr;
+    }
+    while (dummy_versions_->next_ != dummy_versions_) {
+        dummy_versions_->next_->Unref();
+    }
+    delete dummy_versions_;
+    dummy_versions_ = nullptr;
     descriptor_log_.reset();
     if (descriptor_file_ != nullptr) {
         (void)descriptor_file_->Close();
@@ -584,9 +724,16 @@ Status VersionSet::Recover() {
         return status;
     }
 
-    delete current_;
-    current_ = new Version(comparator_, table_cache_);
+    if (current_ != nullptr) {
+        current_->Unref();
+        current_ = nullptr;
+    }
+    while (dummy_versions_->next_ != dummy_versions_) {
+        dummy_versions_->next_->Unref();
+    }
+    AppendVersion(new Version(this, comparator_, table_cache_));
     Finalize(current_);
+
     // LevelDB会检查是否存在关键元数据(lognumber,nextfilenumber)
     // 缺失则设为 corruption 并终止 Recover
     next_file_number_ = 2;
@@ -650,26 +797,19 @@ Status VersionSet::ApplyVersionEdit(VersionEdit* edit) {
         return status;
     }
 
-    for (const auto& compact_pointer : edit->compact_pointers()) {
-        const int level = compact_pointer.first;
-        compact_pointer_[level] = compact_pointer.second.Encode().ToString();
-    }
+    Builder builder(this, current_);
+    builder.Apply(edit);
+    
+    Version* next = new Version(this, comparator_, table_cache_);
+    builder.SaveTo(next);
 
-    Version* next = new Version(*current_);
-    for (const auto& deleted_file : edit->deleted_files()) {
-        next->RemoveFile(deleted_file.first, deleted_file.second);
-    }
-    for (const auto& new_file : edit->new_files()) {
-        next->AddFile(new_file.first, new_file.second);
-    }
-    next->SortFiles();
+    // next->SortFiles();
     Finalize(next);
     ApplyMetadata(*edit);
     for (const auto& new_file : edit->new_files()) {
         MarkFileNumberUsed(new_file.second.number);
     }
-    delete current_;
-    current_ = next;
+    AppendVersion(next);
     return Status::OK();
 }
 
@@ -710,9 +850,7 @@ Compaction* VersionSet::PickCompaction() {
     int level = -1;
     Compaction* compaction = nullptr;
 
-    // 修改点4
-    // 这里当进入 size compaction 时，应该先遍历该层各个文件，若未找到再赋值为files_[level][0]
-    // 不过现在是 10.1，预计后期会补上
+    // 当进入 size compaction 时，应该先遍历该层各个文件，若未找到再赋值为files_[level][0]
     if (size_compaction) {
         level = current_->compaction_level_;
         // assert(level >= 0);
@@ -759,6 +897,17 @@ Compaction* VersionSet::PickCompaction() {
 
     SetupOtherInputs(compaction);
     return compaction;
+}
+
+void VersionSet::AddLiveFiles(std::set<uint64_t>* live) const {
+    assert(live != nullptr);
+    for (Version* version = dummy_versions_->next_; version != dummy_versions_; version = version->next_) {
+        for (int level = 0; level < kNumLevels; ++level) {
+            for (FileMetaData* file : version->files_[level]) {
+                live->insert(file->number);
+            }
+        }
+    }
 }
 
 Status VersionSet::CheckComparatorName(const VersionEdit& edit) const {
@@ -829,10 +978,8 @@ void VersionSet::GetRange2(const std::vector<FileMetaData*>& inputs1,
 }
 
 
-// 修改点5
-// 目前10.1,后续或许会补上部分相应功能，缺失部分：
-// 2. Expand Inputs，扩大输入，减少写放大
-// 3. 更新compact_pointer_，也就是一个轮转选择压缩起点
+// Expand Inputs，扩大输入，减少写放大
+// 更新compact_pointer_，也就是一个轮转选择压缩起点
 void VersionSet::SetupOtherInputs(Compaction* compaction) {
     assert(compaction != nullptr);
     const int level = compaction->level();
@@ -887,6 +1034,21 @@ void VersionSet::SetupOtherInputs(Compaction* compaction) {
     }
 
     compact_pointer_[level] = largest.Encode().ToString();
+}
+
+void VersionSet::AppendVersion(Version* version) {
+    assert(version != nullptr);
+    assert(version->refs_ == 0);
+    if (current_ != nullptr) {
+        current_->Unref();
+    }
+
+    current_ = version;
+    current_->Ref();
+    version->prev_ = dummy_versions_->prev_;
+    version->next_ = dummy_versions_;
+    version->prev_->next_ = version;
+    version->next_->prev_ = version;
 }
 
 }
