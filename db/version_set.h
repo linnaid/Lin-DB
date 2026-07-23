@@ -23,12 +23,14 @@ namespace log {
 class TableCache;
 class Iterator;
 class WritableFile;
+class Version;
+class VersionSet;
 
 // Compaction Picker(压缩选择器):选择哪些文件将会被合并
 // 描述一次待执行 compaction 的元数据计划，当前只负责保存 picker 选出的输入文件
 class Compaction {
 public:
-    explicit Compaction(int level);
+    ~Compaction();
 
     // 起始层级
     int level() const;
@@ -38,12 +40,38 @@ public:
     int num_grandparents() const;
     const FileMetaData* grandparent(int index) const;
 
+    VersionEdit* edit();
+    // 单个输出文件最大大小
+    uint64_t MaxOutputFileSize() const;
+    // 判断本次 compaction 是否可以只移动文件元数据而不重写 SSTable
+    // 是否可以直接移动文件到下一层
+    bool IsTrivialMove() const;
+    // 释放 input_version 引用
+    void ReleaseInputs();
+    // 判断是否该切换新的输出文件
+    bool ShouldStopBefore(const Slice& internal_key);
+    // 判断 key 在最高层是否还可见
+    bool IsBaseLevelForKey(const Slice& user_key);
+    // 把本次 compaction 的所有输入文件标记为删除
+    void AddInputDeletions(VersionEdit* edit);
+
 private:
     friend class VersionSet;
 
+    Compaction(const Options* options, int level);
+
     int level_;
+    uint64_t max_output_file_size_;
+    Version* input_version_;
+    VersionEdit edit_;
+
     std::vector<FileMetaData*> inputs_[2];
     std::vector<FileMetaData*> grandparents_;
+    size_t grandparent_index_;
+    // 是否已经输出过至少一个 key
+    bool seen_key_;
+    int64_t overlapped_bytes_;
+    size_t level_ptrs_[kNumLevels];
 };
 
 
@@ -55,8 +83,8 @@ private:
 class Version {
 public:
     explicit Version(VersionSet* vset, const InternalKeyComparator* comparator, TableCache* table_cache = nullptr);
-    Version(const Version& other);
-    Version& operator=(const Version& other);
+    Version(const Version&) = delete;
+    Version& operator=(const Version&) = delete;
 
     ~Version();
 
@@ -75,7 +103,7 @@ public:
     void SortFiles();
 
     // 找出该层中与[begin, end] 的 user key 有范围重叠的文件
-    void GetOverlappingInputs(int level, const InternalKey* begin, 
+    void GetOverlappingInputs(int level, const InternalKey* begin,
                               const InternalKey* end, std::vector<FileMetaData*>* inputs) const;
 
     Status Get(const ReadOptions& options, const LookupKey& key, std::string* value) const;
@@ -96,7 +124,7 @@ public:
 
 private:
     friend class VersionSet;
-    // friend class VersionSet::Builder;
+    friend class Compaction;
 
     FileMetaData* FindFileInLevel(int level, const Slice& user_key) const;
 
@@ -122,7 +150,7 @@ private:
 // 管理当前 Version，文件号/log/sequence 等版本级元数据
 class VersionSet {
 public:
-    VersionSet(const std::string& dbname, const Options* options, TableCache* table_cache, 
+    VersionSet(const std::string& dbname, const Options* options, TableCache* table_cache,
         const InternalKeyComparator* comparator);
     VersionSet(const VersionSet&) = delete;
     VersionSet& operator=(const VersionSet&) = delete;
@@ -148,6 +176,10 @@ public:
     // 判断当前 Version是否需要压缩
     bool NeedsCompaction() const;
     Compaction* PickCompaction();
+    // 手动 COmpaction picker：选择指定 level/range 的重叠文件
+    Compaction* CompactRange(int level, const InternalKey* begin, const InternalKey* end);
+    // 为 compaction 的 inputs_[0]/inputs_[1] 创建统一有序输入 iterator
+    Iterator* MakeInputIterator(Compaction* compaction);
 
     // 收集所有 live versions 引用的 table file number
     void AddLiveFiles(std::set<uint64_t>* live) const;
@@ -155,16 +187,18 @@ public:
 private:
     // 版本管理中的构建器
     class Builder;
+    friend class Compaction;
 
     Status CheckComparatorName(const VersionEdit& edit) const;
     void ApplyMetadata(const VersionEdit& edit);
+    static const std::vector<FileMetaData*>& LevelFiles(const Version* version, int level);
 
     // 计算 score & level
     void Finalize(Version* version);
     void GetRange(const std::vector<FileMetaData*>& inputs, InternalKey* smallest, InternalKey* largest) const;
     // 两组文件合并后的最大最小 key
-    void GetRange2(const std::vector<FileMetaData*>& inputs1, 
-                   const std::vector<FileMetaData*>& inputs2, 
+    void GetRange2(const std::vector<FileMetaData*>& inputs1,
+                   const std::vector<FileMetaData*>& inputs2,
                    InternalKey* smallest, InternalKey* largest) const;
     // 根据 inputs_[0]填充inputs[1]&grandparents_;
     void SetupOtherInputs(Compaction* compaction);
